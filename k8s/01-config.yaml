@@ -1,0 +1,27 @@
+# Cấu hình dùng chung cho mọi pod (địa chỉ các dịch vụ trong cluster).
+# Secret "music-secrets" (API key tuỳ chọn) được script deploy tạo từ file .env - xem .env.example
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: music-env
+  namespace: music
+data:
+  KAFKA_BOOTSTRAP: "kafka-0.kafka-headless.music.svc.cluster.local:9092,kafka-1.kafka-headless.music.svc.cluster.local:9092,kafka-2.kafka-headless.music.svc.cluster.local:9092"
+  ES_URL: "http://elasticsearch.music.svc.cluster.local:9200"
+  ES_NODES: "elasticsearch.music.svc.cluster.local"
+  ES_PORT: "9200"
+  DATA_BASE: "hdfs://hdfs-namenode.music.svc.cluster.local:8020"
+  SPARK_MASTER: "spark://spark-master.music.svc.cluster.local:7077"
+  # elasticsearch-spark 8.19.14+ có POM trỏ tới artifact không được publish (thirdparty) -> dùng 8.19.13 (tương thích ES 8.19.x)
+  SPARK_PACKAGES: "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.9,org.elasticsearch:elasticsearch-spark-30_2.12:8.19.13"
+  # tài nguyên Spark cho mỗi ứng dụng (profile lite; profile full tăng lên)
+  SPEED_CORES_MAX: "2"
+  BATCH_CORES_MAX: "2"
+  EXECUTOR_MEMORY: "512m"
+  HDFS_REPLICATION: "2"
+  STATE_STORE: "rocksdb"          # state của Spark Streaming ngoài heap (Linux)
+  ES_REPLICAS: "0"
+  TZ: "Asia/Ho_Chi_Minh"
+  TZ_NAME: "Asia/Ho_Chi_Minh"
+  PYTHONUNBUFFERED: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"

@@ -1,0 +1,193 @@
+# THU THẬP DỮ LIỆU: crawler chạy theo lịch trong pod, đẩy thẳng vào Kafka (không ghi file trên máy ai cả).
+#   crawl-charts    : 30 phút/lần - BXH Zing MP3, Spotify, Apple Music, YouTube
+#   crawl-playlists : 6 giờ/lần   - playlist theo thể loại (thể loại + dữ liệu đồng xuất hiện)
+#   crawl-comments  : mỗi giờ     - bình luận YouTube, 3 pod song song (Indexed Job, mỗi pod 1 shard video)
+#   crawl-trends    : hằng ngày   - Google Trends theo tỉnh cho 40 bài hot (chạy chậm ~15 phút để tránh bị chặn 429)
+#   crawl-geo       : hằng ngày   - (cần YOUTUBE_API_KEY) video âm nhạc gắn vị trí gần từng tỉnh; mặc định tạm dừng
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: crawl-charts
+  namespace: music
+spec:
+  schedule: "*/30 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 900
+      template:
+        metadata:
+          labels: { app: crawler, job: charts }
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: crawler
+              image: python:3.12-slim
+              command: ["sh", "-c", "pip install -q --no-cache-dir -r /app/requirements.txt && exec python /app/run_crawler.py --job charts"]
+              envFrom:
+                - configMapRef: { name: music-env }
+                - secretRef: { name: music-secrets, optional: true }
+              resources:
+                requests: { cpu: 100m, memory: 128Mi }
+                limits: { memory: 384Mi }
+              volumeMounts:
+                - { name: code, mountPath: /app }
+          volumes:
+            - name: code
+              configMap: { name: crawler-code }
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: crawl-playlists
+  namespace: music
+spec:
+  schedule: "5 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels: { app: crawler, job: playlists }
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: crawler
+              image: python:3.12-slim
+              command: ["sh", "-c", "pip install -q --no-cache-dir -r /app/requirements.txt && exec python /app/run_crawler.py --job playlists"]
+              envFrom:
+                - configMapRef: { name: music-env }
+                - secretRef: { name: music-secrets, optional: true }
+              resources:
+                requests: { cpu: 100m, memory: 128Mi }
+                limits: { memory: 384Mi }
+              volumeMounts:
+                - { name: code, mountPath: /app }
+          volumes:
+            - name: code
+              configMap: { name: crawler-code }
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: crawl-comments
+  namespace: music
+spec:
+  schedule: "15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      completionMode: Indexed     # mỗi pod nhận JOB_COMPLETION_INDEX = 0..N-1 -> xử lý 1 shard video
+      completions: 3              # tăng cả 3 số (completions, parallelism, SHARD_COUNT) để crawl nhanh hơn
+      parallelism: 3
+      backoffLimit: 6
+      activeDeadlineSeconds: 3000
+      template:
+        metadata:
+          labels: { app: crawler, job: comments }
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: crawler
+              image: python:3.12-slim
+              command: ["sh", "-c", "pip install -q --no-cache-dir -r /app/requirements.txt && exec python /app/run_crawler.py --job comments"]
+              envFrom:
+                - configMapRef: { name: music-env }
+                - secretRef: { name: music-secrets, optional: true }
+              env:
+                - { name: SHARD_COUNT, value: "3" }
+                - { name: SINCE_HOURS, value: "3" }      # chỉ lấy bình luận mới trong 3 giờ (+ bình luận nổi bật)
+                - { name: YT_COMMENT_VIDEOS, value: "60" }
+                - { name: YT_COMMENTS_PER_VIDEO, value: "200" }
+                - { name: YT_POPULAR_PER_VIDEO, value: "60" }
+              resources:
+                requests: { cpu: 100m, memory: 160Mi }
+                limits: { memory: 512Mi }
+              volumeMounts:
+                - { name: code, mountPath: /app }
+          volumes:
+            - name: code
+              configMap: { name: crawler-code }
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: crawl-trends
+  namespace: music
+spec:
+  schedule: "0 4 * * *"
+  timeZone: "Asia/Ho_Chi_Minh"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 5400
+      template:
+        metadata:
+          labels: { app: crawler, job: trends }
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: crawler
+              image: python:3.12-slim
+              command: ["sh", "-c", "pip install -q --no-cache-dir -r /app/requirements.txt && exec python /app/run_crawler.py --job trends"]
+              envFrom:
+                - configMapRef: { name: music-env }
+                - secretRef: { name: music-secrets, optional: true }
+              env:
+                - { name: TRENDS_TOP_N, value: "40" }         # 40 bài -> 10 nhóm so sánh
+                - { name: TRENDS_SLEEP_SEC, value: "45" }     # nghỉ giữa các nhóm
+                - { name: TRENDS_TIMEFRAME, value: "now 7-d" }
+                - { name: TRENDS_PROPERTY, value: "youtube" }
+              resources:
+                requests: { cpu: 50m, memory: 128Mi }
+                limits: { memory: 384Mi }
+              volumeMounts:
+                - { name: code, mountPath: /app }
+          volumes:
+            - name: code
+              configMap: { name: crawler-code }
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: crawl-geo
+  namespace: music
+spec:
+  schedule: "0 3 * * *"
+  suspend: true                   # bật khi đã có YOUTUBE_API_KEY: kubectl -n music patch cronjob crawl-geo -p '{"spec":{"suspend":false}}'
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels: { app: crawler, job: geo }
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: crawler
+              image: python:3.12-slim
+              command: ["sh", "-c", "pip install -q --no-cache-dir -r /app/requirements.txt && exec python /app/run_crawler.py --job geo"]
+              envFrom:
+                - configMapRef: { name: music-env }
+                - secretRef: { name: music-secrets, optional: true }
+              resources:
+                requests: { cpu: 50m, memory: 128Mi }
+                limits: { memory: 256Mi }
+              volumeMounts:
+                - { name: code, mountPath: /app }
+          volumes:
+            - name: code
+              configMap: { name: crawler-code }

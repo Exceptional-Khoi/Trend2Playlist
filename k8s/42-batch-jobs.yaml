@@ -1,0 +1,81 @@
+# BATCH LAYER: tính lại batch view từ toàn bộ master dataset trên HDFS.
+#   batch-views      : mỗi giờ phút 10  (xu hướng theo tỉnh, catalog, các bảng phân tích)
+#   batch-similarity : mỗi 3 giờ phút 40 (độ tương đồng bài hát cho gợi ý)
+# Chạy ngay 1 lần:  kubectl -n music create job --from=cronjob/batch-views batch-views-manual
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: batch-views
+  namespace: music
+spec:
+  schedule: "10 * * * *"
+  timeZone: "Asia/Ho_Chi_Minh"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 3000
+      template:
+        metadata:
+          labels: { app: batch-views }
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: driver
+              image: apache/spark:3.5.9-scala2.12-java17-python3-ubuntu
+              command: ["/bin/bash", "-c"]
+              args: ["exec bash /opt/app/submit.sh batch_views.py batch-views $BATCH_CORES_MAX"]
+              envFrom: [{ configMapRef: { name: music-env } }]
+              env:
+                - name: POD_IP
+                  valueFrom: { fieldRef: { fieldPath: status.podIP } }
+                - { name: DRIVER_MEMORY, value: "700m" }
+              resources:
+                requests: { cpu: 200m, memory: 1Gi }
+                limits: { memory: 1400Mi }
+              volumeMounts:
+                - { name: code, mountPath: /opt/app }
+          volumes:
+            - name: code
+              configMap: { name: spark-code }
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: batch-similarity
+  namespace: music
+spec:
+  schedule: "40 */3 * * *"
+  timeZone: "Asia/Ho_Chi_Minh"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 3000
+      template:
+        metadata:
+          labels: { app: batch-similarity }
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: driver
+              image: apache/spark:3.5.9-scala2.12-java17-python3-ubuntu
+              command: ["/bin/bash", "-c"]
+              args: ["exec bash /opt/app/submit.sh batch_similarity.py batch-similarity $BATCH_CORES_MAX"]
+              envFrom: [{ configMapRef: { name: music-env } }]
+              env:
+                - name: POD_IP
+                  valueFrom: { fieldRef: { fieldPath: status.podIP } }
+                - { name: DRIVER_MEMORY, value: "700m" }
+              resources:
+                requests: { cpu: 200m, memory: 1Gi }
+                limits: { memory: 1400Mi }
+              volumeMounts:
+                - { name: code, mountPath: /opt/app }
+          volumes:
+            - name: code
+              configMap: { name: spark-code }

@@ -1,0 +1,105 @@
+# Spark standalone cluster trên k8s: 1 master (tự phục hồi trạng thái từ PVC) + N worker (Deployment, scale được).
+# Ứng dụng (speed layer, batch job) chạy driver trong pod riêng, executor chạy trên các worker.
+apiVersion: v1
+kind: Service
+metadata:
+  name: spark-master
+  namespace: music
+spec:
+  selector: { app: spark-master }
+  ports:
+    - { name: rpc, port: 7077 }
+    - { name: ui, port: 8080 }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: spark-master-recovery
+  namespace: music
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources: { requests: { storage: 1Gi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spark-master
+  namespace: music
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: spark-master }
+  template:
+    metadata:
+      labels: { app: spark-master }
+    spec:
+      securityContext: { fsGroup: 185 }
+      containers:
+        - name: master
+          image: apache/spark:3.5.9-scala2.12-java17-python3-ubuntu
+          command: ["/bin/bash", "-c"]
+          args: ["exec /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master --host $POD_IP --port 7077 --webui-port 8080"]
+          env:
+            - name: POD_IP
+              valueFrom: { fieldRef: { fieldPath: status.podIP } }
+            - { name: SPARK_DAEMON_MEMORY, value: "256m" }
+            # master chết -> pod mới đọc lại danh sách worker/app đang chạy từ PVC
+            - { name: SPARK_MASTER_OPTS, value: "-Dspark.deploy.recoveryMode=FILESYSTEM -Dspark.deploy.recoveryDirectory=/recovery" }
+          ports:
+            - { name: rpc, containerPort: 7077 }
+            - { name: ui, containerPort: 8080 }
+          readinessProbe:
+            tcpSocket: { port: 7077 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 100m, memory: 384Mi }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - { name: recovery, mountPath: /recovery }
+      volumes:
+        - name: recovery
+          persistentVolumeClaim: { claimName: spark-master-recovery }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spark-worker
+  namespace: music
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: spark-worker }
+  template:
+    metadata:
+      labels: { app: spark-worker }
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels: { app: spark-worker }
+      containers:
+        - name: worker
+          image: apache/spark:3.5.9-scala2.12-java17-python3-ubuntu
+          command: ["/bin/bash", "-c"]
+          # --host = IP pod: driver/master kết nối ngược tới executor bằng IP (pod của Deployment không có DNS riêng)
+          args: ["exec /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master.music.svc.cluster.local:7077 --host $POD_IP --cores $WORKER_CORES --memory $WORKER_MEMORY --webui-port 8081 --work-dir /tmp/spark-work"]
+          env:
+            - name: POD_IP
+              valueFrom: { fieldRef: { fieldPath: status.podIP } }
+            - { name: WORKER_CORES, value: "2" }
+            - { name: WORKER_MEMORY, value: "1g" }
+            - { name: SPARK_DAEMON_MEMORY, value: "256m" }
+            - { name: PYSPARK_PYTHON, value: "python3" }
+            - { name: HOME, value: "/tmp" }
+            - { name: SPARK_WORKER_OPTS, value: "-Dspark.worker.cleanup.enabled=true -Dspark.worker.cleanup.appDataTtl=3600" }
+          ports:
+            - { name: ui, containerPort: 8081 }
+          resources:
+            requests: { cpu: 500m, memory: 1280Mi }
+            limits: { memory: 2Gi }

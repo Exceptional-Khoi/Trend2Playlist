@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VN Music Pulse</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+  <!-- CDN dự phòng: jsDelivr đôi khi tải lỗi -> nạp lại từ unpkg -->
+  <script>
+    window.L || document.write('<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"><\/script>');
+    window.echarts || document.write('<script src="https://unpkg.com/echarts@5.5.1/dist/echarts.min.js"><\/script>');
+  </script>
+</head>
+<body>
+<header class="top">
+  <div class="top-inner">
+    <div class="brand">
+      <h1>VN Music Pulse</h1>
+      <p>Xu hướng âm nhạc theo 34 tỉnh/thành, từ Zing MP3 · Spotify · Apple Music · YouTube, và gợi ý playlist realtime</p>
+    </div>
+    <div class="status" aria-live="polite">
+      <span class="chip" id="st-es"><span class="dot"></span><span>Elasticsearch</span></span>
+      <span class="chip" id="st-batch"><span class="dot"></span><span>Batch view</span></span>
+      <span class="chip" id="st-rt"><span class="dot"></span><span>Realtime</span></span>
+      <button class="icon-btn" id="theme-btn" title="Đổi giao diện sáng/tối" aria-label="Đổi giao diện sáng/tối">◐</button>
+    </div>
+  </div>
+  <nav class="tabs" role="tablist">
+    <button class="tab" role="tab" data-view="map" aria-selected="true">Xu hướng theo tỉnh</button>
+    <button class="tab" role="tab" data-view="charts" aria-selected="false">BXH đa nền tảng</button>
+    <button class="tab" role="tab" data-view="analytics" aria-selected="false">Phân tích</button>
+    <button class="tab" role="tab" data-view="reco" aria-selected="false">Gợi ý playlist realtime</button>
+    <button class="tab" role="tab" data-view="pipeline" aria-selected="false">Pipeline</button>
+  </nav>
+</header>
+
+<main>
+  <!-- ============ 1. BẢN ĐỒ XU HƯỚNG ============ -->
+  <section class="view active" id="view-map">
+    <div class="toolbar">
+      <label>Kích thước vòng tròn
+        <select id="map-metric">
+          <option value="rt_plays">Lượt nghe 15 phút gần nhất (realtime)</option>
+          <option value="mentions_7d">Bình luận nhắc tên tỉnh, 7 ngày</option>
+          <option value="plays_7d">Lượt nghe 7 ngày (batch)</option>
+          <option value="confidence">Độ tin cậy dữ liệu của tỉnh</option>
+        </select>
+      </label>
+      <label>Tỉnh
+        <select id="prov-select"></select>
+      </label>
+      <span class="seg" role="group" aria-label="Cách tính bảng xếp hạng">
+        <button data-mode="merged" aria-pressed="true" title="Batch view + realtime view">Gộp</button>
+        <button data-mode="batch" aria-pressed="false" title="Chỉ batch view (tính lại mỗi giờ)">Batch</button>
+        <button data-mode="realtime" aria-pressed="false" title="Chỉ realtime view (60 phút gần nhất)">Realtime</button>
+      </span>
+    </div>
+    <div class="grid cols-map">
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h2>Bản đồ hoạt động nghe nhạc</h2>
+            <p class="sub" id="map-sub">Bấm vào một tỉnh để xem bảng xếp hạng của tỉnh đó</p>
+          </div>
+        </div>
+        <div id="map" role="img" aria-label="Bản đồ Việt Nam với 34 tỉnh thành"></div>
+      </div>
+      <div class="card" id="prov-panel">
+        <div class="prov-head"><h2 id="prov-name">—</h2><span class="muted" id="prov-region"></span></div>
+        <div class="facts" id="prov-facts"></div>
+        <p class="small muted" id="conf-note" style="margin:-4px 0 10px"></p>
+        <div class="card-head">
+          <div>
+            <h2>Đang thịnh hành</h2>
+            <p class="sub" id="trend-sub">Điểm gộp từ các tín hiệu mà tỉnh có đủ dữ liệu; rê chuột lên thanh màu để xem chi tiết</p>
+          </div>
+        </div>
+        <div class="legend" id="comp-legend"></div>
+        <ol class="plist" id="trend-list"></ol>
+        <h2 style="margin-top:16px">Người dùng ở đây đang nói gì</h2>
+        <p class="sub">Bình luận YouTube có nhắc tên tỉnh (đã ẩn danh). "Tự nhận ở tỉnh" được tính gấp hơn 3 lần "nhắc tên"</p>
+        <div id="quotes"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 2. BXH ĐA NỀN TẢNG ============ -->
+  <section class="view" id="view-charts">
+    <div class="grid cols-2">
+      <div class="card">
+        <h2>BXH toàn quốc hợp nhất</h2>
+        <p class="sub">Điểm tổng hợp từ các BXH mới nhất; một bài được nhận diện chung giữa các nền tảng</p>
+        <div class="table-wrap"><table id="nat-table"></table></div>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <div class="card-head">
+            <div><h2>BXH từng nền tảng</h2><p class="sub" id="chart-sub">Snapshot mới nhất (realtime view)</p></div>
+            <select id="chart-select" aria-label="Chọn bảng xếp hạng"></select>
+          </div>
+          <ol class="plist" id="chart-list"></ol>
+        </div>
+        <div class="card">
+          <h2>Đang lên hạng nhanh</h2>
+          <p class="sub">Theo thay đổi thứ hạng do chính các nền tảng công bố</p>
+          <ol class="plist" id="rising-list"></ol>
+        </div>
+      </div>
+    </div>
+    <div class="grid cols-2" style="margin-top:16px">
+      <div class="card">
+        <h2>Các nền tảng giống nhau đến đâu?</h2>
+        <p class="sub">Tỉ lệ bài chung (Jaccard) giữa các BXH chính. Rê chuột để xem thêm tương quan hạng Spearman</p>
+        <div class="chart" id="overlap-chart"></div>
+      </div>
+      <div class="card">
+        <h2>Nghệ sĩ nổi bật toàn quốc</h2>
+        <p class="sub">Tổng điểm trên mọi BXH của nghệ sĩ</p>
+        <div class="chart tall" id="artist-chart"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 3. PHÂN TÍCH ============ -->
+  <section class="view" id="view-analytics">
+    <div class="grid cols-2">
+      <div class="card">
+        <div class="card-head">
+          <div><h2>Cơ cấu thể loại</h2><p class="sub">Tỉ trọng lượt nghe theo thể loại</p></div>
+          <span class="seg" role="group" aria-label="Nhóm theo">
+            <button data-gscope="region" aria-pressed="true">Theo vùng</button>
+            <button data-gscope="province" aria-pressed="false">Theo tỉnh</button>
+          </span>
+        </div>
+        <div class="legend" id="genre-legend"></div>
+        <div class="chart" id="genre-chart"></div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <div><h2>Giờ nghe nhạc trong tuần</h2><p class="sub">Số lượt nghe theo giờ (giờ VN) × thứ; đậm hơn = nhiều hơn</p></div>
+          <select id="hour-region" aria-label="Vùng"><option value="">Cả nước</option><option>Bắc</option><option>Trung</option><option>Nam</option></select>
+        </div>
+        <div class="chart" id="hour-chart"></div>
+      </div>
+    </div>
+    <div class="grid cols-2" style="margin-top:16px">
+      <div class="card">
+        <h2>Tỉnh được nhắc nhiều nhất trong bình luận</h2>
+        <p class="sub">Số người bình luận YouTube nhắc tên tỉnh (mỗi người tính 1 lần/bài), kể cả tên tỉnh cũ trước sáp nhập</p>
+        <div class="chart tall" id="mention-chart"></div>
+      </div>
+      <div class="card">
+        <h2>Hồ sơ từng tỉnh</h2>
+        <p class="sub">"Bài đặc trưng" là bài được tỉnh nghe/nhắc nhiều hơn hẳn mức trung bình cả nước (lift)</p>
+        <div class="table-wrap" style="max-height:560px;overflow:auto"><table id="summary-table"></table></div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h2>Các nguồn tín hiệu có đồng thuận không?</h2>
+      <p class="sub">Tương quan hạng Spearman trong từng tỉnh (−1 đến 1). "Trends ↔ bình luận": hai nguồn dữ liệu thật độc lập
+        cùng chỉ ra một bài thì càng đáng tin. "Trends ↔ toàn quốc" thấp nghĩa là tỉnh có gu khác cả nước.
+        Chỉ tính khi có ít nhất 5 bài chung.</p>
+      <div class="table-wrap" style="max-height:420px;overflow:auto"><table id="agreement-table"></table></div>
+    </div>
+  </section>
+
+  <!-- ============ 3b. ĐỘ ĐỒNG THUẬN GIỮA CÁC NGUỒN (nằm trong tab Phân tích) ============ -->
+  <!-- ============ 4. GỢI Ý REALTIME ============ -->
+  <section class="view" id="view-reco">
+    <div class="grid cols-2">
+      <div class="card">
+        <h2>Bạn là người nghe nào?</h2>
+        <p class="sub">Chọn một người nghe giả lập, hoặc tạo người nghe của riêng bạn rồi bấm nghe/bỏ qua/thích.
+          Mỗi thao tác đi vào Kafka → Spark Streaming → Elasticsearch, và playlist bên phải cập nhật sau vài giây.</p>
+        <div class="toolbar">
+          <label>Tỉnh <select id="reco-prov"></select></label>
+          <label>Người nghe <select id="reco-user"></select></label>
+          <button class="act" id="new-user">+ Người nghe mới</button>
+        </div>
+        <div class="toolbar">
+          <input type="search" id="search" placeholder="Tìm bài hát (vd: son tung, bolero, lưu niên)…" style="flex:1;min-width:200px">
+        </div>
+        <ol class="plist" id="pick-list"></ol>
+        <h2 style="margin-top:12px">Sự kiện đã gửi</h2>
+        <div class="log" id="event-log" aria-live="polite"></div>
+      </div>
+      <div class="card" id="reco-card">
+        <div class="card-head">
+          <div><h2>Playlist gợi ý cho <span id="reco-who">—</span></h2>
+            <p class="sub">Tính bởi Spark Structured Streaming: bài tương tự (đồng xuất hiện) + xu hướng tại tỉnh</p></div>
+        </div>
+        <div class="reco-meta" id="reco-meta"></div>
+        <ol class="plist" id="reco-list"></ol>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 5. PIPELINE ============ -->
+  <section class="view" id="view-pipeline">
+    <div class="kpis" id="kpis"></div>
+    <div class="grid cols-2">
+      <div class="card">
+        <h2>Lượt nghe mỗi phút</h2>
+        <p class="sub">Realtime view từ Spark Streaming (60 phút gần nhất)</p>
+        <div class="legend" id="tl-legend"></div>
+        <div class="chart" id="timeline-chart"></div>
+      </div>
+      <div class="card">
+        <h2>Dữ liệu crawl theo nền tảng</h2>
+        <p class="sub">Tổng số bản ghi BXH trong master dataset (HDFS) và lần crawl gần nhất</p>
+        <div class="table-wrap"><table id="source-table"></table></div>
+        <h2 style="margin-top:16px">Spark Structured Streaming</h2>
+        <p class="sub">Tốc độ vào/xử lý của từng query (speed layer). Xử lý &lt; vào lâu dài nghĩa là cần thêm tài nguyên</p>
+        <div class="table-wrap"><table id="stream-table"></table></div>
+        <h2 style="margin-top:16px">Độ tươi của từng BXH</h2>
+        <div class="table-wrap"><table id="fresh-table"></table></div>
+      </div>
+    </div>
+    <p class="foot">Kiến trúc Lambda: Crawler (k8s CronJob) → Kafka → Spark Streaming (speed layer) + HDFS → Spark batch (batch layer) → Elasticsearch (serving) → API này.</p>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+venv/
+.venv/
+out/
+*.log
+.ivy2/
+spark-warehouse/
+metastore_db/

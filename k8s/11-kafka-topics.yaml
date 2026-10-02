@@ -1,0 +1,37 @@
+# Tạo các topic (chạy 1 lần, idempotent). Partition cho phép nhiều consumer/executor đọc song song.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-init-topics
+  namespace: music
+spec:
+  backoffLimit: 10
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      containers:
+        - name: topics
+          image: apache/kafka:3.9.2
+          env:
+            - { name: BS, value: "kafka-bootstrap.music.svc.cluster.local:9092" }
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              K=/opt/kafka/bin/kafka-topics.sh
+              until $K --bootstrap-server $BS --list >/dev/null 2>&1; do echo "waiting for kafka..."; sleep 5; done
+              create() {  # tên, số partition, thời gian giữ (ms)
+                $K --bootstrap-server $BS --create --if-not-exists --topic "$1" --partitions "$2" \
+                   --replication-factor 3 --config min.insync.replicas=2 --config retention.ms="$3"
+              }
+              create music.charts    6 2592000000   # 30 ngày
+              create music.playlists 3 2592000000
+              create music.comments  6 1209600000   # 14 ngày
+              create music.events    6  604800000   # 7 ngày; tăng partition khi cần nhiều consumer song song hơn
+              create music.trends    3 7776000000   # 90 ngày, Google Trends theo tỉnh (1 lần/ngày)
+              $K --bootstrap-server $BS --describe --topic music.events
+          resources:
+            requests: { cpu: 50m, memory: 256Mi }
+            limits: { memory: 512Mi }

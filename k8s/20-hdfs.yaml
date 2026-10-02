@@ -1,0 +1,168 @@
+# HDFS: 1 NameNode + N DataNode (StatefulSet, scale được). Lưu master dataset của batch layer
+# và checkpoint của Spark Streaming. Replication = 2 -> mất 1 DataNode vẫn đọc được dữ liệu.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hdfs-config
+  namespace: music
+data:
+  core-site.xml: |
+    <?xml version="1.0"?>
+    <configuration>
+      <property><name>fs.defaultFS</name><value>hdfs://hdfs-namenode.music.svc.cluster.local:8020</value></property>
+    </configuration>
+  hdfs-site.xml: |
+    <?xml version="1.0"?>
+    <configuration>
+      <property><name>dfs.namenode.name.dir</name><value>/data/nn</value></property>
+      <property><name>dfs.datanode.data.dir</name><value>/data/dn</value></property>
+      <property><name>dfs.replication</name><value>2</value></property>
+      <property><name>dfs.permissions.enabled</name><value>false</value></property>
+      <!-- pod không có reverse DNS ổn định -> tắt kiểm tra hostname khi DataNode đăng ký -->
+      <property><name>dfs.namenode.datanode.registration.ip-hostname-check</name><value>false</value></property>
+      <property><name>dfs.namenode.rpc-bind-host</name><value>0.0.0.0</value></property>
+      <property><name>dfs.namenode.servicerpc-bind-host</name><value>0.0.0.0</value></property>
+      <property><name>dfs.namenode.http-bind-host</name><value>0.0.0.0</value></property>
+      <property><name>dfs.namenode.http-address</name><value>0.0.0.0:9870</value></property>
+      <property><name>dfs.client.use.datanode.hostname</name><value>false</value></property>
+      <!-- phát hiện DataNode chết sau ~2.5 phút (mặc định 10.5 phút) để demo re-replication -->
+      <property><name>dfs.namenode.heartbeat.recheck-interval</name><value>60000</value></property>
+      <property><name>dfs.heartbeat.interval</name><value>3</value></property>
+      <property><name>dfs.webhdfs.enabled</name><value>true</value></property>
+    </configuration>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hdfs-namenode
+  namespace: music
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: { app: hdfs-namenode }
+  ports:
+    - { name: rpc, port: 8020 }
+    - { name: http, port: 9870 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: hdfs-namenode
+  namespace: music
+spec:
+  serviceName: hdfs-namenode
+  replicas: 1
+  selector:
+    matchLabels: { app: hdfs-namenode }
+  template:
+    metadata:
+      labels: { app: hdfs-namenode }
+    spec:
+      securityContext: { fsGroup: 1000 }
+      containers:
+        - name: namenode
+          image: apache/hadoop:3.4.1
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              if [ ! -f /data/nn/current/VERSION ]; then
+                echo "Formatting NameNode (lần đầu)"; hdfs namenode -format -nonInteractive -force
+              fi
+              exec hdfs namenode
+          env:
+            - { name: HADOOP_HEAPSIZE_MAX, value: "256m" }
+          ports:
+            - { name: rpc, containerPort: 8020 }
+            - { name: http, containerPort: 9870 }
+          readinessProbe:
+            tcpSocket: { port: 8020 }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 8020 }
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 384Mi }
+            limits: { memory: 640Mi }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: conf, mountPath: /opt/hadoop/etc/hadoop/core-site.xml, subPath: core-site.xml }
+            - { name: conf, mountPath: /opt/hadoop/etc/hadoop/hdfs-site.xml, subPath: hdfs-site.xml }
+      volumes:
+        - name: conf
+          configMap: { name: hdfs-config }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: { requests: { storage: 1Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hdfs-datanode
+  namespace: music
+spec:
+  clusterIP: None
+  selector: { app: hdfs-datanode }
+  ports:
+    - { name: data, port: 9866 }
+    - { name: http, port: 9864 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: hdfs-datanode
+  namespace: music
+spec:
+  serviceName: hdfs-datanode
+  replicas: 2
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels: { app: hdfs-datanode }
+  template:
+    metadata:
+      labels: { app: hdfs-datanode }
+    spec:
+      securityContext: { fsGroup: 1000 }
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels: { app: hdfs-datanode }
+      initContainers:
+        - name: wait-namenode
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z hdfs-namenode.music.svc.cluster.local 8020; do echo waiting namenode; sleep 3; done"]
+      containers:
+        - name: datanode
+          image: apache/hadoop:3.4.1
+          command: ["/bin/bash", "-c", "exec hdfs datanode"]
+          env:
+            - { name: HADOOP_HEAPSIZE_MAX, value: "256m" }
+          ports:
+            - { name: data, containerPort: 9866 }
+            - { name: http, containerPort: 9864 }
+          readinessProbe:
+            tcpSocket: { port: 9866 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 100m, memory: 384Mi }
+            limits: { memory: 640Mi }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: conf, mountPath: /opt/hadoop/etc/hadoop/core-site.xml, subPath: core-site.xml }
+            - { name: conf, mountPath: /opt/hadoop/etc/hadoop/hdfs-site.xml, subPath: hdfs-site.xml }
+      volumes:
+        - name: conf
+          configMap: { name: hdfs-config }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: { requests: { storage: 8Gi } }

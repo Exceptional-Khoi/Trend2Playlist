@@ -1,0 +1,88 @@
+# Profile "full" (cloud / máy nhiều RAM): Elasticsearch 3 node, mỗi index có 1 bản sao
+# -> tắt 1 node ES vẫn phục vụ đọc/ghi. Dùng thay cho k8s/30-elasticsearch.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch
+  namespace: music
+spec:
+  selector: { app: elasticsearch }
+  ports:
+    - { name: http, port: 9200 }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch-headless
+  namespace: music
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: { app: elasticsearch }
+  ports:
+    - { name: transport, port: 9300 }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: elasticsearch
+  namespace: music
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: { app: elasticsearch }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: elasticsearch
+  namespace: music
+spec:
+  serviceName: elasticsearch-headless
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels: { app: elasticsearch }
+  template:
+    metadata:
+      labels: { app: elasticsearch }
+    spec:
+      securityContext: { fsGroup: 1000 }
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels: { app: elasticsearch }
+      containers:
+        - name: elasticsearch
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.19.22
+          env:
+            - name: node.name
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - { name: cluster.name, value: music-es }
+            - { name: discovery.seed_hosts, value: elasticsearch-headless.music.svc.cluster.local }
+            - { name: cluster.initial_master_nodes, value: "elasticsearch-0,elasticsearch-1,elasticsearch-2" }
+            - { name: xpack.security.enabled, value: "false" }
+            - { name: xpack.ml.enabled, value: "false" }
+            - { name: node.store.allow_mmap, value: "false" }
+            - { name: ES_JAVA_OPTS, value: "-Xms1g -Xmx1g" }
+          ports:
+            - { name: http, containerPort: 9200 }
+            - { name: transport, containerPort: 9300 }
+          readinessProbe:
+            httpGet: { path: "/_cluster/health?local=true", port: 9200 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 500m, memory: 2Gi }
+            limits: { memory: 2560Mi }
+          volumeMounts:
+            - { name: data, mountPath: /usr/share/elasticsearch/data }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: { requests: { storage: 10Gi } }

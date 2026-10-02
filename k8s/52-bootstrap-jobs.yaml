@@ -1,0 +1,69 @@
+# Job chạy 1 lần lúc mới triển khai để có dữ liệu ban đầu (script scripts/bootstrap-data.* gọi theo đúng thứ tự):
+#   comments-backfill : lấy toàn bộ bình luận gần đây + nổi bật (không giới hạn thời gian), 3 pod song song
+#   events-backfill   : sinh lịch sử nghe 7 ngày cho người dùng giả lập (để có phân tích theo giờ/ngày)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: comments-backfill
+  namespace: music
+spec:
+  completionMode: Indexed
+  completions: 3
+  parallelism: 3
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels: { app: crawler, job: comments-backfill }
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: crawler
+          image: python:3.12-slim
+          command: ["sh", "-c", "pip install -q --no-cache-dir -r /app/requirements.txt && exec python /app/run_crawler.py --job comments"]
+          envFrom:
+            - configMapRef: { name: music-env }
+            - secretRef: { name: music-secrets, optional: true }
+          env:
+            - { name: SHARD_COUNT, value: "3" }
+            - { name: YT_COMMENT_VIDEOS, value: "80" }
+            - { name: YT_COMMENTS_PER_VIDEO, value: "400" }
+            - { name: YT_POPULAR_PER_VIDEO, value: "200" }
+          resources:
+            requests: { cpu: 100m, memory: 160Mi }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - { name: code, mountPath: /app }
+      volumes:
+        - name: code
+          configMap: { name: crawler-code }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: events-backfill
+  namespace: music
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels: { app: events-backfill }
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: simulator
+          image: python:3.12-slim
+          # HOSTNAME=listener-sim-0 -> sinh lịch sử cho đúng nhóm người dùng của replica 0
+          command: ["sh", "-c", "pip install -q --no-cache-dir -r /app/requirements.txt && export HOSTNAME=listener-sim-0 && exec python /app/simulator.py --backfill-days 7 --backfill-events 150000"]
+          envFrom: [{ configMapRef: { name: music-env } }]
+          env:
+            - { name: SIM_USERS, value: "300" }
+          resources:
+            requests: { cpu: 200m, memory: 128Mi }
+            limits: { memory: 384Mi }
+          volumeMounts:
+            - { name: code, mountPath: /app }
+      volumes:
+        - name: code
+          configMap: { name: crawler-code }
