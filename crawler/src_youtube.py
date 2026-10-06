@@ -2,6 +2,8 @@
 
 1) BXH YouTube Charts Việt Nam (charts.youtube.com) - top bài hát / video / nghệ sĩ theo tuần,
    kèm lượt xem. Gọi endpoint youtubei mà chính trang charts.youtube.com dùng, không cần key.
+   Nếu endpoint web trả 429 và có YOUTUBE_API_KEY, fallback sang videos.list/mostPopular
+   category Music. Hai nguồn có chart_id riêng vì không cùng phương pháp xếp hạng.
 2) Bình luận của các video đang thịnh hành -> tín hiệu THEO TỈNH (người Việt hay bình luận
    "ai ở Nghệ An điểm danh", "Sài Gòn mưa nghe bài này"...). Spark sẽ nhận diện tên tỉnh.
      - Có YOUTUBE_API_KEY  -> YouTube Data API v3 (commentThreads.list, 1 quota/lần gọi)
@@ -14,8 +16,11 @@ import hashlib
 import itertools
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
+
+import requests
 
 from common import TOPIC_CHARTS, TOPIC_COMMENTS, chart_entry, iso, track_fields
 
@@ -39,8 +44,11 @@ def _browse(session, chart_type, period="WEEKLY"):
         "query": (f"perspective=CHART_DETAILS&chart_params_country_code={COUNTRY}"
                   f"&chart_params_chart_type={chart_type}&chart_params_period_type={period}"),
     }
-    r = session.post(CHARTS_URL, json=body, timeout=30,
-                     headers={"Origin": "https://charts.youtube.com", "Referer": "https://charts.youtube.com/"})
+    # Không dùng adapter retry chung: lặp ngay request 429 làm thời gian job tăng ~20 giây
+    # và hiếm khi tự hết chặn. Trả lỗi ngay để chuyển sang Data API fallback.
+    headers = dict(session.headers)
+    headers.update({"Origin": "https://charts.youtube.com", "Referer": "https://charts.youtube.com/"})
+    r = requests.post(CHARTS_URL, json=body, timeout=30, headers=headers)
     r.raise_for_status()
     content = r.json()["contents"]["sectionListRenderer"]["contents"][0]["musicAnalyticsSectionRenderer"]["content"]
     if chart_type == "TRACKS":
@@ -60,7 +68,7 @@ def _release(x):
     return f"{rd['year']:04d}-{rd.get('month', 1):02d}-{rd.get('day', 1):02d}" if rd.get("year") else None
 
 
-def chart_videos(session):
+def _internal_chart_videos(session):
     """Danh sách (video_id, track_fields, weekly_views, rank, prev) của BXH bài hát + video."""
     out = []
     for x in _browse(session, "TRACKS"):
@@ -90,18 +98,125 @@ def chart_videos(session):
     return out
 
 
+_DURATION = re.compile(r"^P(?:(?P<days>\d+)D)?T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?$")
+_GENERIC_CHANNEL = re.compile(r"\b(vie\s*channel|yeah1|phố\s*nhạc\s*việt|entertainment|records|media|tv)\b", re.I)
+
+
+def _duration_seconds(value):
+    """ISO-8601 duration của YouTube (PT3M42S) -> giây, không thêm dependency."""
+    m = _DURATION.match(value or "")
+    if not m:
+        return None
+    parts = {k: int(v or 0) for k, v in m.groupdict().items()}
+    return parts["days"] * 86400 + parts["hours"] * 3600 + parts["minutes"] * 60 + parts["seconds"]
+
+
+def _api_title_artists(raw_title, channel_title):
+    """Tách performer khỏi title khi video được đăng bởi kênh chương trình/label."""
+    from textnorm import clean_channel_name, clean_video_title, split_artists
+
+    channel = (channel_title or "").strip().strip("-–— ")
+    generic = bool(_GENERIC_CHANNEL.search(channel))
+    artists = [channel if generic else clean_channel_name(channel)] if channel else []
+    first = re.split(r"[|｜]", raw_title or "", maxsplit=1)[0].strip()
+    parts = re.split(r"\s+[-–—]\s+", first, maxsplit=1)
+    if generic and len(parts) == 2:
+        left, right = (p.strip() for p in parts)
+        right_norm = right.lower()
+        # "BÀI - A, B, C"; phần phải rõ ràng là danh sách performer.
+        if "," in right or re.search(r"\b(?:ft\.?|feat\.?)\b", right, re.I):
+            artists = split_artists(right)
+            return clean_video_title(left, artists), artists
+        # "A/ A ft. B - BÀI" trên các kênh show/label.
+        left_artists = split_artists(left)
+        if not right_norm.startswith(("tiết mục", "tiet muc", "liên minh", "lien minh")) and (
+                re.search(r"\b(?:ft\.?|feat\.?)\b", left, re.I) or len(left.split()) <= 4):
+            artists = left_artists
+            return clean_video_title(right, artists), artists
+        # Không suy đoán performer nếu phần phải là tên tiết mục; giữ label để batch
+        # nhận diện đây là kênh đăng và gộp theo tên với nguồn khác khi có thể.
+        return clean_video_title(left, artists), artists
+    return clean_video_title(raw_title, artists), artists
+
+
+def _api_popular_music(session, key):
+    """Fallback chính thức khi endpoint YouTube Charts web bị 429.
+
+    videos.list(chart=mostPopular, category=Music) không giống BXH YouTube Music
+    theo tuần, vì vậy dùng chart_id riêng để downstream không trộn hai khái niệm.
+    """
+    params = {
+        "part": "snippet,contentDetails,statistics",
+        "chart": "mostPopular",
+        "regionCode": COUNTRY.upper(),
+        "videoCategoryId": "10",
+        "maxResults": 50,
+        "hl": "vi",
+        "key": key,
+    }
+    r = session.get("https://www.googleapis.com/youtube/v3/videos", params=params, timeout=30)
+    if r.status_code != 200:
+        raise RuntimeError(f"YouTube Data API videos.list HTTP {r.status_code}: {r.text[:300]}")
+    items = r.json().get("items", [])
+    if not items:
+        raise RuntimeError("YouTube Data API videos.list trả về 0 video")
+
+    out = []
+    for rank, x in enumerate(items, start=1):
+        sn, stats = x.get("snippet") or {}, x.get("statistics") or {}
+        vid = x.get("id")
+        title, artists = _api_title_artists(sn.get("title"), sn.get("channelTitle"))
+        thumbs = (sn.get("thumbnails") or {})
+        thumb = next((thumbs[k].get("url") for k in ("maxres", "standard", "high", "medium", "default")
+                      if thumbs.get(k)), None)
+        tr = track_fields(title, artists, "youtube", platform_id=vid,
+                          url=f"https://www.youtube.com/watch?v={vid}" if vid else None,
+                          thumbnail=thumb, duration_s=_duration_seconds((x.get("contentDetails") or {}).get("duration")),
+                          release_date=(sn.get("publishedAt") or "")[:10] or None)
+        tr["raw_title"] = sn.get("title")
+        meta = {"currentPosition": rank, "previousPosition": None,
+                "_total_plays": int(stats["viewCount"]) if stats.get("viewCount") else None,
+                "_total_likes": int(stats["likeCount"]) if stats.get("likeCount") else None}
+        out.append(("youtube_most_popular_music_vn", vid, tr, stats.get("viewCount"), meta))
+    log.info("youtube Data API mostPopular music: %d videos", len(out))
+    return out
+
+
+def chart_videos(session):
+    """Ưu tiên YouTube Music Charts; tự chuyển sang Data API nếu endpoint web bị chặn."""
+    try:
+        return _internal_chart_videos(session)
+    except Exception as e:  # noqa: BLE001 - endpoint web thường trả 429 theo IP
+        key = os.getenv("YOUTUBE_API_KEY", "").strip()
+        if not key:
+            raise RuntimeError(
+                "YouTube Charts web không truy cập được; hãy đặt YOUTUBE_API_KEY để dùng "
+                "videos.list(chart=mostPopular) làm nguồn dự phòng"
+            ) from e
+        log.warning("YouTube Charts web lỗi (%s) -> dùng Data API mostPopular", e)
+        return _api_popular_music(session, key)
+
+
 def crawl_charts(session, crawled_ms):
     items = chart_videos(session)
     sizes = {}
     for chart_id, _, _, _, _ in items:
         sizes[chart_id] = sizes.get(chart_id, 0) + 1
     for chart_id, _, tr, views, meta in items:
+        metric_name = "view_count" if chart_id == "youtube_most_popular_music_vn" else "weekly_views"
         yield TOPIC_CHARTS, tr["track_key"], chart_entry(
             chart_id, crawled_ms, meta.get("currentPosition"), sizes[chart_id], tr,
-            previous_rank=meta.get("previousPosition"), metric_name="weekly_views",
-            metric_value=int(views) if views else None, granularity_min=60)
+            previous_rank=meta.get("previousPosition"), metric_name=metric_name,
+            metric_value=int(views) if views else None, total_plays=meta.get("_total_plays"),
+            total_likes=meta.get("_total_likes"), granularity_min=60)
     # BXH nghệ sĩ: record_type riêng, không có track_key
-    artists = _browse(session, "ARTISTS")
+    artists = []
+    # Data API không có chart nghệ sĩ tương đương; chỉ lấy khi endpoint Charts web đang hoạt động.
+    if any(chart_id.startswith("youtube_top_") for chart_id, _, _, _, _ in items):
+        try:
+            artists = _browse(session, "ARTISTS")
+        except Exception as e:  # noqa: BLE001 - vẫn giữ được chart bài/video đã crawl
+            log.warning("youtube artist chart failed: %s", e)
     for x in artists:
         meta = x.get("chartEntryMetadata", {})
         rec = {"record_type": "artist_entry", "chart_id": "youtube_top_artists_vn_weekly", "chart_scope": "VN",
@@ -215,12 +330,19 @@ def crawl_comments(session, crawled_ms, shard_index=0, shard_count=1, since_hour
 
     # 1) ứng viên: video trên BXH YouTube (đã có id) + bài hot trên Zing (cần search id)
     cands, seen = [], set()
-    for _, vid, tr, _, meta in sorted(chart_videos(session), key=lambda x: x[4].get("currentPosition") or 999):
+    try:
+        youtube_candidates = chart_videos(session)
+    except Exception as e:  # noqa: BLE001 - vẫn có thể lấy ứng viên Zing và scrape bình luận
+        log.warning("không lấy được ứng viên YouTube chart: %s", e)
+        youtube_candidates = []
+    for _, vid, tr, _, meta in sorted(youtube_candidates, key=lambda x: x[4].get("currentPosition") or 999):
         if vid and tr["track_key"] not in seen and len(cands) < top_n:
             seen.add(tr["track_key"])
             cands.append((vid, tr))
     if os.getenv("YT_COMMENT_ZING_EXTRA", "true").lower() == "true":
         for tr in _zing_candidates(session):
+            if len(cands) >= top_n:
+                break
             if tr["track_key"] not in seen:
                 seen.add(tr["track_key"])
                 cands.append((None, tr))

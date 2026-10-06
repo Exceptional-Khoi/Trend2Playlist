@@ -62,6 +62,8 @@ def test_youtube_video_titles():
     assert clean_video_title("Trăm Năm Chỉ Một Người – Một Đời Chỉ Yêu Một Người | Hoàng K Official",
                              ["Hoàng K Official"]) == "Trăm Năm Chỉ Một Người – Một Đời Chỉ Yêu Một Người"
     assert clean_video_title("LƯU NIÊN", ["Jack - J97"]) == "LƯU NIÊN"
+    assert clean_video_title("LƯU NIÊN - NGUYỄN ĐÌNH VŨ | JACK J97 | TAM THÁI TỬ | COVER",
+                             ["Nguyễn Đình Vũ"]) == "LƯU NIÊN"
     assert clean_channel_name("DatG Music") == "DatG"
     assert clean_channel_name("Hoàng K Official") == "Hoàng K"
 

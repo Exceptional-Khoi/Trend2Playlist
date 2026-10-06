@@ -92,7 +92,8 @@ key_stats = (recs.withColumn("aslugs", slug_list_udf()("artists"))
              .withColumn("title_slug", F.split("track_key", "__").getItem(0)))
 
 
-_LABEL = re.compile(r"(entertainment|music|records|media|official|channel|studio|production|vevo|-tv$|-ent$)")
+_LABEL = re.compile(r"(entertainment|music|records|media|official|channel|studio|production|vevo|yeah1|vie-channel|"
+                    r"pho-nhac-viet|-tv$|-ent$)")
 
 
 def _overlap(xs, ys):

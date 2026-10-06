@@ -3,7 +3,7 @@
 #   crawl-playlists : 6 giờ/lần   - playlist theo thể loại (thể loại + dữ liệu đồng xuất hiện)
 #   crawl-comments  : mỗi giờ     - bình luận YouTube, 3 pod song song (Indexed Job, mỗi pod 1 shard video)
 #   crawl-trends    : hằng ngày   - Google Trends theo tỉnh cho 40 bài hot (chạy chậm ~15 phút để tránh bị chặn 429)
-#   crawl-geo       : hằng ngày   - (cần YOUTUBE_API_KEY) video âm nhạc gắn vị trí gần từng tỉnh; mặc định tạm dừng
+#   crawl-geo       : hằng ngày   - (cần YOUTUBE_API_KEY) video có geotag gần tỉnh, không phải vị trí người nghe; mặc định tạm dừng
 apiVersion: batch/v1
 kind: CronJob
 metadata:

@@ -16,11 +16,12 @@ Crawler chạy trong pod Kubernetes và đẩy bản ghi thẳng vào Kafka. Kh�
 
 ```mermaid
 flowchart LR
-  subgraph SRC[Nền tảng nghe nhạc]
+  subgraph SRC[Nguồn dữ liệu ngoài]
     Z[Zing MP3<br/>#zingchart, Top 100]:::s
     S[Spotify<br/>Top 50 VN, playlist]:::s
     A[Apple Music<br/>Most Played VN]:::s
     Y[YouTube<br/>Charts VN + bình luận]:::s
+    G[Google Trends<br/>tín hiệu theo tỉnh]:::s
   end
   SIM[Bộ giả lập người nghe<br/>+ người dùng trên web]
   SRC -->|CronJob crawler<br/>k8s pod| K[(Kafka 3 broker<br/>KRaft, RF=3)]
@@ -99,7 +100,7 @@ Máy 8 GB RAM không đủ, hãy dùng cloud (GKE/AKS, xem `docs/03-trien-khai.m
 # Windows: chạy trong Git Bash, hoặc PowerShell: .\scripts\run.ps1 deploy
 minikube start --cpus 6 --memory 12g --nodes 1          # hoặc cluster cloud
 minikube addons enable metrics-server                     # cho HPA
-cp .env.example .env                                      # (tuỳ chọn) điền YOUTUBE_API_KEY
+cp .env.example .env                                      # nên điền YOUTUBE_API_KEY để có fallback ổn định
 
 ./scripts/deploy.sh                 # dựng Kafka, HDFS, ES, Spark, crawler, API (~10-15 phút lần đầu vì kéo image)
 ./scripts/bootstrap-data.sh         # crawl lần đầu + backfill + batch view đầu tiên
@@ -141,3 +142,4 @@ Máy phát triển (8 GB RAM, ổ C gần đầy) không chạy nổi cả cụm
 - [docs/02-kien-truc.md](docs/02-kien-truc.md): thiết kế chi tiết: topic, schema, công thức, thuật toán gợi ý, index ES
 - [docs/03-trien-khai.md](docs/03-trien-khai.md): triển khai trên minikube (Windows) và GKE, sự cố thường gặp
 - [docs/04-kiem-thu.md](docs/04-kiem-thu.md): kịch bản kiểm thử chịu lỗi và mở rộng, kết quả mong đợi
+- [docs/06-bao-cao-du-lieu-crawl.md](docs/06-bao-cao-du-lieu-crawl.md): báo cáo dữ liệu đã crawl và vai trò của từng bảng trong dự án
