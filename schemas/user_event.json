@@ -1,0 +1,9 @@
+{
+  "event_id": "uuid",
+  "event_time": "2026-10-07T00:00:00Z",
+  "user_id": "u00001",
+  "track_id": "canonical_track_id",
+  "action": "play|like|skip",
+  "province": "Hanoi",
+  "session_id": "s00001"
+}
