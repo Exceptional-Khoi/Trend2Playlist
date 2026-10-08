@@ -1,0 +1,114 @@
+{
+  "audit_date": "2026-10-07",
+  "scope": "Public sample endpoints; source cadence and observed changes are distinct. Realtime here concerns data, not audio delivery.",
+  "raw_round1_root": "out/realtime-audit-2026-10-07/round1/http",
+  "platforms": {
+    "spotify": {
+      "public_sample": "Charts and playlist embed metadata; daily/weekly chart signal, no global live listening events collected.",
+      "alternate_url": "https://api.spotify.com/v1/me/player/currently-playing",
+      "actual_round1": "HTTP 401, missing/invalid/expired access token at 14:19:58Z.",
+      "actual_round2_alternate": "GET /v1/me/player/recently-played?limit=10 returned HTTP 401 at 14:32:13Z without user token.",
+      "alternate_requirement": "OAuth user-read-currently-playing, reports only the consenting current user's playback. Recently-played also requires user OAuth.",
+      "private_capability": "Spotify for Artists gives live new-release counts every few seconds during the first seven days; artist/team access required. This does not establish realtime availability from public charts.",
+      "primary_sources": [
+        "https://developer.spotify.com/documentation/web-api/reference/get-the-users-currently-playing-track",
+        "https://developer.spotify.com/documentation/web-api/reference/get-recently-played",
+        "https://support.spotify.com/us/artists/article/live-stream-count/",
+        "https://support.spotify.com/us/artists/article/understanding-spotify-charts/"
+      ]
+    },
+    "apple_music": {
+      "public_sample": "Public most-played RSS chart metadata; no listening event or count in the collected sample.",
+      "alternate_url": "https://api.music.apple.com/v1/me/recent/played/tracks",
+      "actual_previous_recheck": "HTTP 401 with empty body; this is not a successful playback-history sample.",
+      "actual_round2_alternate": "GET https://api.music.apple.com/v1/catalog/vn/charts?types=songs&limit=10 returned HTTP 401 at 14:32:14Z without developer token.",
+      "alternate_requirement": "Every Apple Music API call needs a signed developer token. Personal history additionally needs Music User Token. Catalog charts remain charts, not a global live listening feed.",
+      "primary_sources": [
+        "https://developer.apple.com/documentation/applemusicapi/generating-developer-tokens",
+        "https://developer.apple.com/documentation/applemusicapi/get-recently-played-resources",
+        "https://developer.apple.com/musickit/"
+      ]
+    },
+    "deezer": {
+      "public_sample": "Catalog and chart records. Rank field is not a stream count.",
+      "previous_bad_route": "https://api.deezer.com/track/65356224/comments?limit=25",
+      "actual_previous_recheck": "HTTP 200 contains API error 600 Unknown path components, so zero comments.",
+      "correct_alternate_candidates": [
+        "https://api.deezer.com/album/302127/comments?limit=25",
+        "https://api.deezer.com/artist/27/comments?limit=25"
+      ],
+      "actual_round1_and_round2": "Correct album and artist comments requests failed with WinError 10061 connection refused, including repeat attempts. No response body to classify endpoint result. Connection failure is not proof of absent realtime support.",
+      "primary_sources": ["https://cdns-content.dzcdn.net/pdf/CGV-fr.pdf"]
+    },
+    "soundcloud": {
+      "public_url": "https://soundcloud.com/forss/flickermood",
+      "actual_round1": "HTTP 200, one target track counter plus 26 public HTML comments with text and publication timestamp. Authors are pseudonymized by parser.",
+      "same_day_play_snapshots": [
+        {"requested_at": "2026-10-07T05:56:02Z", "plays": 969901},
+        {"requested_at": "2026-10-07T07:51:04Z", "plays": 969908},
+        {"requested_at": "2026-10-07T14:19:59Z", "plays": 969932},
+        {"requested_at": "2026-10-07T14:32:10Z", "plays": 969932}
+      ],
+      "round1_round2_comparison": "Counter fields and all 26 public comment fingerprints unchanged after 731 seconds (12m11s). This does not establish fixed refresh interval or absence of activity.",
+      "newest_sample_comment": "2026-08-23T17:58:32Z",
+      "interpretation": "The public cumulative counter changed within the day. Public HTML counter and comment publication latency are unverified; the sample comments are not current-day events.",
+      "official_comments_api_actual_round1": "GET https://api.soundcloud.com/tracks/293/comments?limit=25 returned HTTP 401 without OAuth; prior recheck had 429. Client-credentials token can access public resources, but requires own registered app credentials.",
+      "primary_sources": [
+        "https://developers.soundcloud.com/docs",
+        "https://help.soundcloud.com/hc/en-us/articles/45764984867355-Your-Insights-troubleshooting"
+      ]
+    },
+    "bandcamp": {
+      "public_url": "https://bandcamp.com/artists",
+      "actual_round1_html": "HTTP 200, real artists page containing ten recent sale items, unlike previous gallery/homepage challenge responses.",
+      "client_js": "https://s4.bcbits.com/client-bundle/1/ArtistsLabelsPages_1/salesfeed_js-6850855cdc8c60f8112e736e8178db6d.js",
+      "verified_public_requests": [
+        "GET https://bandcamp.com/api/salesfeed/1/get_initial",
+        "GET https://bandcamp.com/api/salesfeed/1/get?start_date=<previous_end_date>"
+      ],
+      "client_poll_seconds": 32,
+      "client_display_buffer_seconds": 120,
+      "actual_round1_initial": {"events": 49, "items": 70, "albums": 44, "tracks": 15, "physical_products": 11, "end_cursor": 1791383040},
+      "actual_round1_incremental": {"events": 199, "items": 240, "albums": 97, "tracks": 88, "discographies": 2, "physical_products": 53, "end_cursor": 1791382980},
+      "actual_round2_initial": {"events": 97, "items": 116, "albums": 47, "tracks": 47, "physical_products": 22, "end_cursor": 1791383520, "persisted_cap": 100},
+      "actual_round2_incremental": {"events": 325, "items": 385, "albums": 155, "tracks": 147, "discographies": 2, "physical_products": 81, "end_cursor": 1791383520},
+      "round1_round2_comparison": "Initial feeds sampled 468 seconds apart have zero shared sale fingerprints. Round2 incremental feed from previous initial end cursor contains 385 sold items with UTC times 14:24:03.262839 through 14:31:59.638028 on 7 October 2026.",
+      "actual_round2_event_age": "Feed server_time 14:32:11Z; newest sale item is 11.361972 seconds old, oldest item in initial is 134.228853 seconds old. These observed event ages differ from the client UI display buffer of 120 seconds. No universal API latency SLA is inferred.",
+      "interpretation": "Verified public near-realtime sales feed, not plays. Client intentionally delays display by 120 seconds; raw API can contain younger events. No token required by this public client's GET requests. Numeric price/currency, artist/product, event UTC, country and release URL are exposed; buyer identity is omitted. Physical products are separately labeled; some can be unrelated merch.",
+      "primary_sources": [
+        "https://bandcamp.com/artists",
+        "https://s4.bcbits.com/client-bundle/1/ArtistsLabelsPages_1/salesfeed_js-6850855cdc8c60f8112e736e8178db6d.js"
+      ]
+    },
+    "audiomack": {
+      "public_url": "https://audiomack.com/mr-eazi/song/comfort",
+      "actual_round1": "HTTP 200, one target song counter parsed from public hydration. Comments section is empty in SSR; comment count is exposed, not comment text.",
+      "same_day_snapshots": [
+        {"requested_at": "2026-10-07T05:56:10Z", "source": "trending page", "plays": 297893, "favorites": 1509, "reposts": 42, "playlists": 1901, "comments": 51},
+        {"requested_at": "2026-10-07T07:51:05Z", "source": "target song page", "plays": 302301, "favorites": 1526, "reposts": 42, "playlists": 1934, "comments": 52},
+        {"requested_at": "2026-10-07T14:20:02Z", "source": "target song page", "plays": 316775, "favorites": 1582, "reposts": 43, "playlists": 2054, "comments": 53},
+        {"requested_at": "2026-10-07T14:32:10Z", "source": "target song page", "plays": 317242, "favorites": 1582, "reposts": 43, "playlists": 2056, "comments": 53}
+      ],
+      "round1_round2_comparison": "After 728 seconds (12m08s), plays increased by 467 and playlists by two. Other selected counters unchanged. Changes were observed within a short polling interval; event-to-publication latency remains unmeasured.",
+      "interpretation": "Public counters demonstrably change within the day. Event-to-counter latency is not documented for this HTML source; do not infer it from paid creator stats. cache-hit is 1 in these target counter objects.",
+      "primary_sources": [
+        "https://audiomack.com/mr-eazi/song/comfort",
+        "https://audiomack.zendesk.com/hc/en-us/articles/360054835331-Why-can-I-no-longer-see-my-plays-or-why-have-my-total-plays-decreased"
+      ]
+    },
+    "qobuz": {
+      "public_feed": "https://www.qobuz.com/us-en/rss/new-releases/download-streaming-albums",
+      "actual_round1_feed": "HTTP 200, forty release records with album URL, title, genre and pubDate. Newest item pubDate Wed, 07 Oct 2026 00:00:00 +0200; feed does not declare refresh cadence.",
+      "actual_round2_feed": "HTTP 200 at 14:32:11Z; all forty selected RSS release records unchanged after 727 seconds (12m07s).",
+      "chart_candidate_actual": "The us-en Qobuz Top50 URL returned a generic playlist catalog, so HTTP 200 is not chart success.",
+      "primary_chart": "https://www.qobuz.com/ch-fr/playlists/qobuz-top-50/2340483",
+      "primary_chart_cadence": "Official page explicitly says the Top50 is monthly; at research time description says last update 1 September 2026.",
+      "interpretation": "Public RSS is a release catalog feed, not a live listening counter. A source refresh SLA is unverified. API application credentials must be issued by Qobuz; website credentials are not extracted.",
+      "primary_sources": [
+        "https://www.qobuz.com/us-en/rss/new-releases/download-streaming-albums",
+        "https://www.qobuz.com/ch-fr/playlists/qobuz-top-50/2340483",
+        "https://static.qobuz.com/apps/api/QobuzAPI-TermsofUse.pdf"
+      ]
+    }
+  }
+}

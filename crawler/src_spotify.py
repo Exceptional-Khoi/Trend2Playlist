@@ -112,7 +112,7 @@ def crawl_kworb_daily(session, crawled_ms, country=os.getenv("KWORB_COUNTRY", "v
             continue
         rank = _int(tds[0])
         move = tds[1].strip()
-        prev = rank - int(move) if re.fullmatch(r"[+-]\d+", move) else (rank if move == "=" else None)
+        prev = rank + int(move) if re.fullmatch(r"[+-]\d+", move) else (rank if move == "=" else None)
         rows.append(dict(rank=rank, prev=prev, track_id=m.group(1), title=html.unescape(m.group(2)),
                          artists=[html.unescape(a) for a in _ARTIST.findall(row)], streams=_int(tds[6]),
                          total=_int(tds[10]) if len(tds) > 10 else None))

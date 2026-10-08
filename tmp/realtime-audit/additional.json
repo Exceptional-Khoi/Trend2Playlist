@@ -1,0 +1,10 @@
+[
+  {"platform":"Deezer","category":"public_artist_fans","url":"https://api.deezer.com/artist/27"},
+  {"platform":"Deezer","category":"public_album_fans","url":"https://api.deezer.com/album/302127"},
+  {"platform":"TIDAL","category":"alternate_public_artist","url":"https://tidal.com/artist/3521265"},
+  {"platform":"Kugou","category":"alternate_mobile_rising_chart","url":"https://m.kugou.com/rank/info/6666?json=true"},
+  {"platform":"Kugou","category":"alternate_mobile_chart_index","url":"https://m.kugou.com/rank/list?json=true"},
+  {"platform":"Kuwo","category":"alternate_chart_page","url":"https://www.kuwo.cn/rankList"},
+  {"platform":"ChiaSeNhac","category":"alternate_www_domain","url":"https://www.chiasenhac.vn/"},
+  {"platform":"JOOX","category":"alternate_hk_charts_page","url":"https://www.joox.com/hk/charts"}
+]

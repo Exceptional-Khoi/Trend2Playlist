@@ -1,0 +1,4 @@
+[
+  {"platform":"Bandcamp","category":"live_sales_initial_api","url":"https://bandcamp.com/api/salesfeed/1/get_initial"},
+  {"platform":"Bandcamp","category":"live_sales_next_api","url":"https://bandcamp.com/api/salesfeed/1/get?start_date=1791382672"}
+]

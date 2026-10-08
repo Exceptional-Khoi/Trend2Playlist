@@ -1,0 +1,10 @@
+[
+  {"platform":"Bandcamp","category":"public_live_feed_client","url":"https://s4.bcbits.com/client-bundle/1/ArtistsLabelsPages_1/salesfeed_js-6850855cdc8c60f8112e736e8178db6d.js"},
+  {"platform":"Deezer","category":"artist_comments","url":"https://api.deezer.com/artist/27/comments?limit=25"},
+  {"platform":"Qobuz","category":"alternate_top_50_playlist","url":"https://www.qobuz.com/us-en/playlists/qobuz-top-50/2340483"},
+  {"platform":"Anghami","category":"alternate_daily_chart_playlist","url":"https://mobile.anghami.com/playlist/6471050"},
+  {"platform":"Anghami","category":"alternate_recent_song_page","url":"https://mobile.anghami.com/song/1303708931"},
+  {"platform":"Napster","category":"official_music_web_app","url":"https://app.napster.com/"},
+  {"platform":"Jamendo","category":"recent_reviews","url":"https://api.jamendo.com/v3.0/reviews/tracks/?client_id=709fa152&format=json&limit=20&order=addeddate_desc"},
+  {"platform":"Jamendo","category":"recent_catalog_stats","url":"https://api.jamendo.com/v3.0/tracks/?client_id=709fa152&format=json&limit=20&include=stats&order=releasedate_desc&type=single%20albumtrack"}
+]

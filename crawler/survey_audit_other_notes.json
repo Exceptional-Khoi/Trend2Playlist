@@ -1,0 +1,387 @@
+{
+  "research_date": "2026-10-07",
+  "scope": [
+    "TIDAL",
+    "Jamendo",
+    "Napster",
+    "Amazon Music",
+    "Anghami"
+  ],
+  "purpose": "Primary-source evidence for a second audit of alternative public music signals. Candidate URLs do not imply a successful crawl.",
+  "method": "Read official documentation and ordinary public pages; inspect existing raw HTTP cache locally. Network probes are delegated to the root runner. No credentials, audio downloads, or mutations of external services.",
+  "definitions": {
+    "public_realtime_music_signal": "A publicly accessible source whose music activity or update cadence is explicitly evidenced; frequent local polling alone does not establish this.",
+    "personal_activity": "History, recommendations, or playback associated with an authenticated user; do not present it as platform-wide listening activity.",
+    "unknown_cadence": "Documentation/page does not specify update interval or publication latency. A new release date or current fetch timestamp does not establish a realtime feed."
+  },
+  "platforms": [
+    {
+      "platform": "TIDAL",
+      "evidence": [
+        {
+          "url": "https://developer.tidal.com/documentation/api-sdk/api-sdk-authorization",
+          "facts": "API access needs a Bearer access token. Client credentials cover catalog resources; user resources use a user authorization flow. The documentation gives GET /v2/albums/59727856?countryCode=US as a catalog example."
+        },
+        {
+          "url": "https://developer.tidal.com/documentation/embeds/embeds-overview",
+          "facts": "Official embeds expose shareable music entities. Existing local album embed cache contains track title, artist, duration and identifiers; it provides no listening-event timestamps."
+        },
+        {
+          "url": "https://support.tidal.com/hc/en-us/articles/29710779228817-My-New-Arrivals",
+          "facts": "My New Arrivals is personalized, contains up to 30 tracks and updates each Friday. This is a weekly personal recommendation feature."
+        },
+        {
+          "url": "https://support.tidal.com/hc/en-us/articles/360009257397-Your-History",
+          "facts": "Your History presents a subscriber's personal most-listened tracks, including monthly and yearly collections. It does not establish public platform-wide listening events."
+        }
+      ],
+      "existing_cache": [
+        {
+          "url": "https://embed.tidal.com/albums/134858516",
+          "http_status": 200,
+          "body": "out/crawlKhoi-survey/http/f28f8681cf38ba33d784.body",
+          "signal": "Album catalog tracklist; 14 track rows from the actual embed",
+          "cadence": "unknown"
+        }
+      ],
+      "candidates": [
+        {
+          "url": "https://openapi.tidal.com/v2/albums/59727856?countryCode=US",
+          "signal": "Documented catalog API; unauthenticated probe can confirm the access restriction",
+          "auth": "Bearer required",
+          "cadence": "unknown",
+          "probe_status": "completed_by_root; see current_audit_observations"
+        },
+        {
+          "url": "https://tidal.com/artist/3521265",
+          "signal": "Ordinary public artist profile; inspect actual SSR metadata or related music lists if returned",
+          "auth": "No credentials supplied for public-page request",
+          "cadence": "unknown",
+          "probe_status": "not_probed_in_this_round"
+        }
+      ],
+      "conclusion_vi": "Mẫu đã crawl là catalog. API có xác thực; playlist cá nhân cập nhật tuần và lịch sử cá nhân không chứng minh có luồng thống kê nghe nhạc công khai realtime.",
+      "current_audit_observations": [
+        {
+          "url": "https://openapi.tidal.com/v2/albums/59727856?countryCode=US",
+          "requested_at": "2026-10-07T14:20:04+00:00",
+          "http_status": 401,
+          "bytes": 130,
+          "body": "out/realtime-audit-2026-10-07/round1/http/7b9c34043f4027fc3a5e.body",
+          "error_response": {
+            "errors": [
+              {
+                "code": "UNAUTHORIZED",
+                "detail": "Invalid or missing Authorization Header",
+                "meta": {
+                  "category": "AUTHENTICATION_ERROR"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "platform": "Jamendo",
+      "evidence": [
+        {
+          "url": "https://developer.jamendo.com/v3.0/authentication",
+          "facts": "Every API request requires client_id. The documentation explicitly publishes 709fa152 for testing the read API. OAuth access_token is optional for public review reads; private/user writes have additional requirements."
+        },
+        {
+          "url": "https://developer.jamendo.com/v3.0/tracks",
+          "facts": "Tracks supports release-date sorting, single/albumtrack selection and stats. Its current text says stats counters update daily; a future live-analytics promise is not evidence that they already do."
+        },
+        {
+          "url": "https://developer.jamendo.com/v3.0/charts/track",
+          "facts": "Returns trending track IDs, artist IDs and chart position. The document does not specify refresh cadence."
+        },
+        {
+          "url": "https://developer.jamendo.com/v3.0/reviews/tracks",
+          "facts": "Public track reviews expose text, title, score, agreement count and dateadded. Supports order=addeddate_desc. No publication/update latency is specified."
+        },
+        {
+          "url": "https://developer.jamendo.com/v3.0/feeds",
+          "facts": "Returns active editorial homepage feeds. Each feed has date_start/date_end; types include music entities and news. These are editorial windows rather than listening events."
+        }
+      ],
+      "existing_cache": [
+        {
+          "url": "https://api.jamendo.com/v3.0/tracks/?client_id=709fa152&format=json&limit=20&include=musicinfo%2Bstats%2Blicenses&order=popularity_total&type=both",
+          "http_status": 200,
+          "body": "out/crawlKhoi-survey/http/551c466d74c2ed9d80e4.body",
+          "api_status": "failed",
+          "api_code": 11,
+          "api_message": "Jamendo Api Suspended Application Error: Your application has been suspended, please contact Jamendo",
+          "records": 0,
+          "caveat": "Earlier query also used unsupported type=both. New candidate below corrects the documented type values. HTTP 200 did not mean API success."
+        }
+      ],
+      "candidates": [
+        {
+          "url": "https://api.jamendo.com/v3.0/feeds/?client_id=709fa152&format=json&limit=20&order=date_start_desc",
+          "signal": "Active editorial updates with start/end dates",
+          "auth": "Official testing read-API client_id; previously returned application suspended on another method",
+          "cadence": "unknown",
+          "probe_status": "completed_by_root; see current_audit_observations"
+        },
+        {
+          "url": "https://api.jamendo.com/v3.0/reviews/tracks/?client_id=709fa152&format=json&limit=20&order=addeddate_desc",
+          "signal": "Recent public track reviews",
+          "auth": "client_id required; public reviews do not require user access_token",
+          "cadence": "unknown",
+          "probe_status": "completed_by_root; see current_audit_observations"
+        },
+        {
+          "url": "https://api.jamendo.com/v3.0/tracks/?client_id=709fa152&format=json&limit=20&include=stats&order=releasedate_desc&type=single%20albumtrack",
+          "signal": "Recent releases and cumulative statistics",
+          "auth": "client_id required",
+          "cadence": "Stats documented as daily; catalog publication latency unknown",
+          "probe_status": "completed_by_root; see current_audit_observations"
+        },
+        {
+          "url": "https://api.jamendo.com/v3.0/charts/track/?client_id=709fa152&format=json&limit=20",
+          "signal": "Trending music chart",
+          "auth": "client_id required",
+          "cadence": "unknown",
+          "probe_status": "not_probed; same official testing client suspended on three fresh read methods"
+        }
+      ],
+      "conclusion_vi": "Có API catalog, chart, review và editorial feed. Stats được docs mô tả cập nhật hằng ngày. Test client chính thức đã bị suspended; chưa có dữ liệu activity realtime crawl thành công.",
+      "current_audit_observations": [
+        {
+          "url": "https://api.jamendo.com/v3.0/feeds/?client_id=709fa152&format=json&limit=20&order=date_start_desc",
+          "requested_at": "2026-10-07T14:20:04+00:00",
+          "http_status": 200,
+          "bytes": 205,
+          "body": "out/realtime-audit-2026-10-07/round1/http/49e113892490f7d629bc.body",
+          "api_status": "failed",
+          "api_code": 11,
+          "api_message": "Jamendo Api Suspended Application Error: Your application has been suspended, please contact Jamendo",
+          "records": 0
+        },
+        {
+          "url": "https://api.jamendo.com/v3.0/reviews/tracks/?client_id=709fa152&format=json&limit=20&order=addeddate_desc",
+          "requested_at": "2026-10-07T14:21:31+00:00",
+          "http_status": 200,
+          "bytes": 205,
+          "body": "out/realtime-audit-2026-10-07/round1/http/62554836174cbe042836.body",
+          "api_status": "failed",
+          "api_code": 11,
+          "api_message": "Jamendo Api Suspended Application Error: Your application has been suspended, please contact Jamendo",
+          "records": 0
+        },
+        {
+          "url": "https://api.jamendo.com/v3.0/tracks/?client_id=709fa152&format=json&limit=20&include=stats&order=releasedate_desc&type=single%20albumtrack",
+          "requested_at": "2026-10-07T14:21:32+00:00",
+          "http_status": 200,
+          "bytes": 205,
+          "body": "out/realtime-audit-2026-10-07/round1/http/48596bf0bc6f8756ce01.body",
+          "api_status": "failed",
+          "api_code": 11,
+          "api_message": "Jamendo Api Suspended Application Error: Your application has been suspended, please contact Jamendo",
+          "records": 0
+        }
+      ]
+    },
+    {
+      "platform": "Napster",
+      "evidence": [
+        {
+          "url": "https://help.napster.com/hc/en-us/articles/45020305766669-What-is-Napster",
+          "facts": "Current Napster offers AI-generated music and creation tools. Its official web app is app.napster.com."
+        },
+        {
+          "url": "https://www.napster.com/news/napster-unveils-new-app-experience-to-bring-ai-creations-and-video-companions-to-mobile-devices",
+          "facts": "Official announcement dated 2026-01-28 describes the new app as AI-generated entertainment and states that it has no traditional record-label catalog."
+        },
+        {
+          "url": "https://developers.napster.com/docs/api-reference",
+          "facts": "Current API reference covers agents, AI companions, connections, sessions and transcripts, not a traditional music chart/catalog API. Base URL is companion-api.napster.com and endpoints use /public."
+        },
+        {
+          "url": "https://developers.napster.com/docs/introduction/authentication",
+          "facts": "Every current Napster API request requires X-Api-Key. Missing, expired or invalid keys yield 401. Resources are scoped to an organization and project."
+        },
+        {
+          "url": "https://developers.napster.com/docs/api-reference/companions/napster-stock-get",
+          "facts": "Documents GET /public/companions/napster-stock for stock AI companions. It is not a feed of music listening, tracks or public music comments."
+        }
+      ],
+      "candidates": [
+        {
+          "url": "https://app.napster.com/",
+          "signal": "Ordinary official web-app entry; inspect any music catalog metadata actually returned",
+          "auth": "No login or signup performed",
+          "cadence": "unknown",
+          "probe_status": "completed_by_root; see current_audit_observations"
+        },
+        {
+          "url": "https://companion-api.napster.com/public/companions/napster-stock",
+          "signal": "Current documented API access-boundary check; AI companions, not music records",
+          "auth": "X-Api-Key required",
+          "cadence": "Not applicable to music audience activity",
+          "probe_status": "not_probed; AI companion API is irrelevant to music activity"
+        }
+      ],
+      "conclusion_vi": "Napster hiện đổi sản phẩm sang nội dung AI. API mới có realtime kết nối AI nhưng không phải luồng lượt nghe nhạc công khai. Không dùng catalog/API nhạc cũ để suy ra khả năng hiện tại.",
+      "current_audit_observations": [
+        {
+          "url": "https://app.napster.com/",
+          "requested_at": "2026-10-07T14:21:32+00:00",
+          "http_status": 200,
+          "bytes": 5890,
+          "body": "out/realtime-audit-2026-10-07/round1/http/bef0d18d8bea5eff67b9.body",
+          "title": "Napster | AI Experts You Can See and Talk To",
+          "has_music_jsonld": false,
+          "has_next_data": false,
+          "result": "App shell with JS entry /js/index-JwGRtS2o.js; no music catalog rows or activity events in this HTML"
+        },
+        {
+          "url": "https://api.napster.com/v2.2/tracks/top?limit=20",
+          "observed_at": "2026-10-07T14:20:05+00:00",
+          "http_status": null,
+          "error": "ConnectionError: HTTPSConnectionPool(host='api.napster.com', port=443): Max retries exceeded with url: /v2.2/tracks/top?limit=20 (Caused by NameResolutionError(\"HTTPSConnection(host='api.napster.com', port=443): Failed to resolve 'api.napster.com' ([Errno 11001] getaddrinfo failed)\"))",
+          "source_summary": "out/realtime-audit-2026-10-07/round1/summary.json",
+          "caveat": "A DNS failure is a local observed failure, not proof that the service or endpoint is globally unavailable."
+        }
+      ]
+    },
+    {
+      "platform": "Amazon Music",
+      "evidence": [
+        {
+          "url": "https://developer.amazon.com/docs/music/landing_home",
+          "facts": "The official Amazon Music developer portal states that the Web API is in closed beta."
+        },
+        {
+          "url": "https://www.developer.amazon.com/zh/docs/music/API_web_overview_v2.html",
+          "alternate_official_document_url": "https://d332qao9bxuj3h.cloudfront.net/docs/music/API_web_overview_v2.html",
+          "facts": "V2 uses api.music.amazon.com under /v2. Requests require OAuth Bearer and x-api-key set to the LWA Security Profile ID. Access is limited to approved developers."
+        },
+        {
+          "url": "https://developer.amazon.com/docs/music/API_web_track_v2.html",
+          "facts": "GET /v2/tracks/top returns popular catalog tracks ordered by popularity and requires music::catalog. Refresh interval and aggregation window are not specified in this page."
+        },
+        {
+          "url": "https://developer.amazon.com/docs/music/API_web_views_overview_v2.html",
+          "facts": "Recently Played is /v2/views/recent and needs music::history. It is user history. Catalog views use music::catalog and library views use music::library:read."
+        },
+        {
+          "url": "https://developer.amazon.com/docs/music/API_web_browse.html",
+          "facts": "V1 top tracks are explicitly personalized from the current user's listening history; do not equate that endpoint with a global popularity chart."
+        }
+      ],
+      "existing_cache": [
+        {
+          "url": "https://music.amazon.in/playlists/B079TDKKTT",
+          "http_status": 200,
+          "body": "out/realtime-recheck-2026-10-07/http/7dbad4d2a46a57dd8e7e.body",
+          "signal": "Public playlist-page response; first audit did not record music rows",
+          "cadence": "unknown"
+        }
+      ],
+      "candidates": [
+        {
+          "url": "https://api.music.amazon.com/v2/tracks/top?first=20",
+          "signal": "Documented popular catalog tracks API; an unauthenticated request can establish access restriction",
+          "auth": "Approved beta access, OAuth Bearer and x-api-key; music::catalog scope",
+          "cadence": "unknown",
+          "probe_status": "completed_by_root; see current_audit_observations"
+        }
+      ],
+      "conclusion_vi": "API popularity và lịch sử nghe có tồn tại trong tài liệu chính thức nhưng yêu cầu OAuth, x-api-key và quyền closed beta. Lịch sử cá nhân không phải số liệu toàn nền tảng; chart cadence chưa rõ.",
+      "current_audit_observations": [
+        {
+          "url": "https://api.music.amazon.com/v2/tracks/top?first=20",
+          "requested_at": "2026-10-07T14:20:05+00:00",
+          "http_status": 401,
+          "bytes": 81,
+          "body": "out/realtime-audit-2026-10-07/round1/http/e70e81c16edaaf589ff3.body",
+          "error_response": {
+            "error": {
+              "code": "INVALID_TOKEN",
+              "message": "Invalid authorization token format"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "platform": "Anghami",
+      "evidence": [
+        {
+          "url": "https://mobile.anghami.com/playlist/6471050",
+          "facts": "Public Top Anghami page contains 50 songs. Its own description identifies them as most-streamed songs and states daily updates. Web research could read it; central runner accessibility remains separate evidence."
+        },
+        {
+          "url": "https://support.anghami.com/hc/en-us/articles/227813867-What-Are-Anghami-Charts",
+          "facts": "Official help describes daily and weekly chart updates."
+        },
+        {
+          "url": "https://support.anghami.com/hc/en-us/articles/6197975412890-Live-Radio",
+          "facts": "Live Radio supports live music sessions, comments, applause and chats, with public or private sessions. Plus is required to host; Free and Plus users can join. The help page explicitly says it is unavailable on PC/Web. No documented public crawl/API feed was identified here."
+        },
+        {
+          "url": "https://mobile.anghami.com/home",
+          "facts": "Public home page includes a new-music section and links to music entities. Catalog publication latency is not stated."
+        }
+      ],
+      "existing_cache": [
+        {
+          "url": "https://mobile.anghami.com/home",
+          "http_status": 406,
+          "body": "out/realtime-recheck-2026-10-07/http/47268ac6fb6c0dcea64d.body"
+        },
+        {
+          "url": "https://play.anghami.com/playlist/5891475",
+          "http_status": 406,
+          "body": "out/realtime-recheck-2026-10-07/http/07cb778151b06e6ab22c.body"
+        }
+      ],
+      "candidates": [
+        {
+          "url": "https://mobile.anghami.com/playlist/6471050",
+          "signal": "Official Top Anghami most-streamed song list",
+          "auth": "Ordinary public-page GET; no credentials supplied",
+          "cadence": "daily, explicitly stated in the page description",
+          "probe_status": "completed_by_root; see current_audit_observations"
+        },
+        {
+          "url": "https://mobile.anghami.com/song/1303708931",
+          "signal": "Song linked from official new-music home section",
+          "auth": "Ordinary public-page GET; no credentials supplied",
+          "cadence": "unknown",
+          "probe_status": "completed_by_root; see current_audit_observations"
+        }
+      ],
+      "conclusion_vi": "Có bảng lượt nghe cập nhật hằng ngày và Live Radio với comment realtime trên mobile. Các public page đã probe trước đó trả406; chưa crawl được luồng realtime. Không kết luận toàn nền tảng không có realtime.",
+      "current_audit_observations": [
+        {
+          "url": "https://mobile.anghami.com/playlist/6471050",
+          "requested_at": "2026-10-07T14:21:31+00:00",
+          "http_status": 406,
+          "bytes": 0,
+          "body": "out/realtime-audit-2026-10-07/round1/http/5d3eb029a028e7af1dd8.body"
+        },
+        {
+          "url": "https://mobile.anghami.com/song/1303708931",
+          "requested_at": "2026-10-07T14:21:31+00:00",
+          "http_status": 406,
+          "bytes": 0,
+          "body": "out/realtime-audit-2026-10-07/round1/http/ad12e136f8b68cdec64b.body"
+        },
+        {
+          "url": "https://play.anghami.com/charts",
+          "requested_at": "2026-10-07T14:20:04+00:00",
+          "http_status": 406,
+          "bytes": 0,
+          "body": "out/realtime-audit-2026-10-07/round1/http/f1e361456f93b0e1e917.body"
+        }
+      ]
+    }
+  ],
+  "current_audit_summary": "out/realtime-audit-2026-10-07/round1/summary.json",
+  "new_music_activity_records_from_these_5_platforms": 0
+}
