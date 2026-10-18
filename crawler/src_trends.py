@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-from common import TOPIC_TRENDS, UA
+from common import TOPIC_TRENDS, UA, report_issue, source_metadata
 
 log = logging.getLogger("trends")
 TRENDS = "https://trends.google.com/trends"
@@ -112,7 +112,7 @@ def _candidates_from_charts(session, crawled_ms):
                 best[slot] = max(best.get(slot, 0), pts)
                 meta.setdefault(key.split("__")[0], {"track_key": key, "title": rec["title"], "artists": rec["artists"]})
         except Exception as e:  # noqa: BLE001
-            log.warning("chart %s failed: %s", fn.__module__, e)
+            report_issue(fn.__module__ + ":candidates", type(e).__name__)
     score = {}
     for (title_slug, _), pts in best.items():
         score[title_slug] = score.get(title_slug, 0) + pts
@@ -124,7 +124,7 @@ def candidates(session, crawled_ms):
     try:
         tracks = _candidates_from_es()
     except Exception as e:  # noqa: BLE001
-        log.info("ES chưa sẵn sàng (%s) -> lấy ứng viên từ BXH", e)
+        log.info("ES chưa sẵn sàng (%s) -> lấy ứng viên từ BXH", type(e).__name__)
     if len(tracks) < 5:
         tracks = _candidates_from_charts(session, crawled_ms)
     out, seen = [], set()
@@ -162,24 +162,29 @@ def crawl_trends(session, crawled_ms):
     base = {"record_type": "trends_geo", "source": "google_trends", "snapshot_id": f"trends@{day}",
             "crawled_ms": crawled_ms, "timeframe": TIMEFRAME, "property": PROPERTY or "web",
             "anchor_key": anchor["track_key"], "anchor_query": anchor["query"]}
+    base.update(source_metadata("unknown"))
     groups = [rest[i:i + 4] for i in range(0, len(rest), 4)]
     log.info("Google Trends: %d bài, bài mốc '%s', %d nhóm, %.0f giây/nhóm", len(cands), anchor["query"], len(groups), SLEEP)
     failures = 0
+    anchor_written = False
     for gi, group in enumerate(groups):
         try:
             regions = client.compare_by_region([anchor["query"]] + [c["query"] for c in group])
             failures = 0
         except Exception as e:  # noqa: BLE001 - 1 nhóm lỗi thì bỏ qua nhóm đó
             failures += 1
-            log.warning("nhóm %d lỗi: %s", gi, e)
+            report_issue(f"trends_group:{gi}", type(e).__name__)
             if failures >= 2:
                 log.error("dừng sớm sau 2 nhóm lỗi liên tiếp")
                 break
             continue
-        members = ([(anchor, 0, True)] if gi == 0 else []) + [(c, i + 1, False) for i, c in enumerate(group)]
+        if not regions:
+            report_issue(f"trends_group:{gi}", "empty_regions")
+        members = ([(anchor, 0, True)] if not anchor_written else []) + [(c, i + 1, False) for i, c in enumerate(group)]
         for reg in regions:
             vals, has = reg.get("value") or [], reg.get("hasData") or []
-            if not vals:
+            if len(vals) != len(group) + 1 or len(has) != len(vals):
+                report_issue(f"trends_group:{gi}", "invalid_region_values")
                 continue
             for c, idx, is_anchor in members:
                 rec = dict(base, group_id=gi, track_key=c["track_key"], title=c["title"], artists=c.get("artists") or [],
@@ -188,6 +193,8 @@ def crawl_trends(session, crawled_ms):
                            anchor_share=int(vals[0]), anchor_has_data=bool(has[0]) if has else False,
                            is_anchor=is_anchor)
                 yield TOPIC_TRENDS, c["track_key"], rec
+                if is_anchor:
+                    anchor_written = True
         log.info("nhóm %d/%d xong: %s", gi + 1, len(groups), [c["query"] for c in group])
         if gi < len(groups) - 1:
             time.sleep(SLEEP + random.uniform(0, SLEEP / 3))

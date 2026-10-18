@@ -13,7 +13,7 @@ import logging
 import os
 import re
 
-from common import TOPIC_CHARTS, TOPIC_PLAYLISTS, chart_entry, playlist_item, track_fields
+from common import TOPIC_CHARTS, TOPIC_PLAYLISTS, chart_entry, playlist_item, track_fields, report_issue
 
 log = logging.getLogger("spotify")
 
@@ -61,11 +61,15 @@ def crawl_charts(session, crawled_ms):
         try:
             name, tracks = fetch_embed_playlist(session, pid)
         except Exception as e:  # noqa: BLE001
-            log.warning("spotify chart %s failed: %s", chart_id, e)
+            report_issue(chart_id, type(e).__name__)
             continue
+        if not tracks:
+            report_issue(chart_id, "empty_chart")
         for rank, t in enumerate(tracks, start=1):
             tr = _track(t)
-            yield TOPIC_CHARTS, tr["track_key"], chart_entry(chart_id, crawled_ms, rank, len(tracks), tr)
+            yield TOPIC_CHARTS, tr["track_key"], chart_entry(
+                chart_id, crawled_ms, rank, len(tracks), tr,
+                source_cadence="weekly" if chart_id.endswith("weekly") else "daily")
         log.info("spotify %s (%s): %d tracks", chart_id, name, len(tracks))
     yield from crawl_kworb_daily(session, crawled_ms)
 
@@ -75,8 +79,10 @@ def crawl_playlists(session, crawled_ms):
         try:
             name, tracks = fetch_embed_playlist(session, pid)
         except Exception as e:  # noqa: BLE001
-            log.warning("spotify playlist %s failed: %s", pid, e)
+            report_issue(pid, type(e).__name__)
             continue
+        if not tracks:
+            report_issue(pid, "empty_playlist")
         for pos, t in enumerate(tracks, start=1):
             tr = _track(t)
             yield TOPIC_PLAYLISTS, tr["track_key"], playlist_item(f"spotify:{pid}", name or label, None, crawled_ms, pos, tr)
@@ -84,14 +90,15 @@ def crawl_playlists(session, crawled_ms):
 
 
 # ------------------------------------------------------------------ kworb (streams)
-_ROW = re.compile(r"<tr>(.*?)</tr>", re.S)
+_ROW = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.S | re.I)
 _TD = re.compile(r"<td[^>]*>(.*?)</td>", re.S)
 _ARTIST = re.compile(r'href="\.\./artist/[^"]+">([^<]+)</a>')
 _TRACK = re.compile(r'href="\.\./track/([A-Za-z0-9]+)\.html">([^<]+)</a>')
 
 
 def _int(s):
-    s = re.sub(r"[^\d\-]", "", s or "")
+    s = html.unescape(re.sub(r"<[^>]+>", "", s or ""))
+    s = re.sub(r"[^\d\-]", "", s)
     return int(s) if s not in ("", "-") else None
 
 
@@ -100,7 +107,7 @@ def crawl_kworb_daily(session, crawled_ms, country=os.getenv("KWORB_COUNTRY", "v
         r = session.get(f"https://kworb.net/spotify/country/{country}_daily.html", timeout=25)
         r.raise_for_status()
     except Exception as e:  # noqa: BLE001
-        log.warning("kworb failed: %s", e)
+        report_issue("kworb", type(e).__name__)
         return
     r.encoding = "utf-8"
     body = r.text[r.text.find("<tbody"):]
@@ -111,15 +118,21 @@ def crawl_kworb_daily(session, crawled_ms, country=os.getenv("KWORB_COUNTRY", "v
         if len(tds) < 7 or not m:
             continue
         rank = _int(tds[0])
-        move = tds[1].strip()
+        move = html.unescape(re.sub(r"<[^>]+>", "", tds[1])).strip()
+        if rank is None or rank <= 0:
+            report_issue("kworb", "invalid_rank")
+            continue
         prev = rank + int(move) if re.fullmatch(r"[+-]\d+", move) else (rank if move == "=" else None)
         rows.append(dict(rank=rank, prev=prev, track_id=m.group(1), title=html.unescape(m.group(2)),
                          artists=[html.unescape(a) for a in _ARTIST.findall(row)], streams=_int(tds[6]),
                          total=_int(tds[10]) if len(tds) > 10 else None))
+    if not rows:
+        report_issue("kworb", "empty_chart")
     for x in rows:
         tr = track_fields(x["title"], x["artists"], "spotify", platform_id=x["track_id"],
                           url=f"https://open.spotify.com/track/{x['track_id']}")
         yield TOPIC_CHARTS, tr["track_key"], chart_entry(
             f"spotify_daily_streams_{country}", crawled_ms, x["rank"], len(rows), tr, previous_rank=x["prev"],
-            metric_name="streams", metric_value=x["streams"], total_plays=x["total"])
+            metric_name="streams", metric_value=x["streams"], total_plays=x["total"],
+            scope=country.upper(), source_cadence="daily")
     log.info("kworb spotify daily %s: %d rows", country, len(rows))

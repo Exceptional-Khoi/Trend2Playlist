@@ -2,6 +2,8 @@
 
 1) BXH YouTube Charts Việt Nam (charts.youtube.com) - top bài hát / video / nghệ sĩ theo tuần,
    kèm lượt xem. Gọi endpoint youtubei mà chính trang charts.youtube.com dùng, không cần key.
+   Nếu endpoint web trả 429 và có YOUTUBE_API_KEY, fallback sang videos.list/mostPopular
+   category Music. Hai nguồn có chart_id riêng vì không cùng phương pháp xếp hạng.
 2) Bình luận của các video đang thịnh hành -> tín hiệu THEO TỈNH (người Việt hay bình luận
    "ai ở Nghệ An điểm danh", "Sài Gòn mưa nghe bài này"...). Spark sẽ nhận diện tên tỉnh.
      - Có YOUTUBE_API_KEY  -> YouTube Data API v3 (commentThreads.list, 1 quota/lần gọi)
@@ -14,10 +16,12 @@ import hashlib
 import itertools
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 
-from common import TOPIC_CHARTS, TOPIC_COMMENTS, chart_entry, iso, track_fields
+from common import (TOPIC_CHARTS, TOPIC_COMMENTS, chart_entry, iso, track_fields,
+                    report_issue, snapshot_id, source_metadata)
 
 log = logging.getLogger("youtube")
 CHARTS_URL = "https://charts.youtube.com/youtubei/v1/browse?alt=json"
@@ -44,10 +48,14 @@ def _browse(session, chart_type, period="WEEKLY"):
     r.raise_for_status()
     content = r.json()["contents"]["sectionListRenderer"]["contents"][0]["musicAnalyticsSectionRenderer"]["content"]
     if chart_type == "TRACKS":
-        return content["trackTypes"][0].get("trackViews", [])
-    if chart_type == "VIDEOS":
-        return content["videos"][0].get("videoViews", [])
-    return content["artists"][0].get("artistViews", [])
+        items = content["trackTypes"][0].get("trackViews", [])
+    elif chart_type == "VIDEOS":
+        items = content["videos"][0].get("videoViews", [])
+    else:
+        items = content["artists"][0].get("artistViews", [])
+    if not items:
+        report_issue("youtube:" + chart_type, "empty_chart")
+    return items
 
 
 def _thumb(x):
@@ -60,10 +68,17 @@ def _release(x):
     return f"{rd['year']:04d}-{rd.get('month', 1):02d}-{rd.get('day', 1):02d}" if rd.get("year") else None
 
 
-def chart_videos(session):
+def _internal_chart_videos(session):
     """Danh sách (video_id, track_fields, weekly_views, rank, prev) của BXH bài hát + video."""
     out = []
-    for x in _browse(session, "TRACKS"):
+    def fetch(chart_type):
+        try:
+            return _browse(session, chart_type)
+        except Exception as exc:
+            report_issue("youtube:" + chart_type, type(exc).__name__)
+            return []
+
+    for x in fetch("TRACKS"):
         vid = x.get("encryptedVideoId")
         tr = track_fields(x.get("name"), [a["name"] for a in x.get("artists", [])], "youtube", platform_id=vid,
                           url=f"https://www.youtube.com/watch?v={vid}" if vid else None, thumbnail=_thumb(x),
@@ -73,7 +88,7 @@ def chart_videos(session):
     from textnorm import clean_channel_name, clean_video_title
 
     by_video = {vid: tr for _, vid, tr, _, _ in out if vid}
-    for x in _browse(session, "VIDEOS"):
+    for x in fetch("VIDEOS"):
         vid = x.get("id")
         known = by_video.get(vid)  # video cũng nằm trong BXH bài hát -> dùng tên bài/nghệ sĩ sạch của nó
         if known:
@@ -90,18 +105,134 @@ def chart_videos(session):
     return out
 
 
+_DURATION = re.compile(r"^P(?:(?P<days>\d+)D)?T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?$")
+_GENERIC_CHANNEL = re.compile(r"\b(vie\s*channel|yeah1|phố\s*nhạc\s*việt|entertainment|records|media|tv)\b", re.I)
+
+
+def _duration_seconds(value):
+    """ISO-8601 duration của YouTube (PT3M42S) -> giây, không thêm dependency."""
+    m = _DURATION.match(value or "")
+    if not m:
+        return None
+    parts = {k: int(v or 0) for k, v in m.groupdict().items()}
+    return parts["days"] * 86400 + parts["hours"] * 3600 + parts["minutes"] * 60 + parts["seconds"]
+
+
+def _api_title_artists(raw_title, channel_title):
+    """Tách performer khỏi title khi video được đăng bởi kênh chương trình/label."""
+    from textnorm import clean_channel_name, clean_video_title, split_artists
+
+    channel = (channel_title or "").strip().strip("-–— ")
+    generic = bool(_GENERIC_CHANNEL.search(channel))
+    artists = [channel if generic else clean_channel_name(channel)] if channel else []
+    first = re.split(r"[|｜]", raw_title or "", maxsplit=1)[0].strip()
+    parts = re.split(r"\s+[-–—]\s+", first, maxsplit=1)
+    if generic and len(parts) == 2:
+        left, right = (p.strip() for p in parts)
+        right_norm = right.lower()
+        # "BÀI - A, B, C"; phần phải rõ ràng là danh sách performer.
+        if "," in right or re.search(r"\b(?:ft\.?|feat\.?)\b", right, re.I):
+            artists = split_artists(right)
+            return clean_video_title(left, artists), artists
+        # Only an explicit collaboration marker supports artist-first parsing.
+        # Word count alone cannot distinguish a short song title from an artist.
+        left_artists = split_artists(left)
+        if not right_norm.startswith(("tiết mục", "tiet muc", "liên minh", "lien minh")) and (
+                re.search(r"\b(?:ft\.?|feat\.?)\b", left, re.I)):
+            artists = left_artists
+            return clean_video_title(right, artists), artists
+        # Either side may be the song. Preserve both until a trusted source can
+        # resolve them; the uploader is not evidence of the performing artist.
+        return clean_video_title(first, []), []
+    if generic:
+        return clean_video_title(raw_title, []), []
+    return clean_video_title(raw_title, artists), artists
+
+
+def _api_popular_music(session, key):
+    """Fallback chính thức khi endpoint YouTube Charts web bị 429.
+
+    videos.list(chart=mostPopular, category=Music) không giống BXH YouTube Music
+    theo tuần, vì vậy dùng chart_id riêng để downstream không trộn hai khái niệm.
+    """
+    params = {
+        "part": "snippet,contentDetails,statistics",
+        "chart": "mostPopular",
+        "regionCode": COUNTRY.upper(),
+        "videoCategoryId": "10",
+        "maxResults": 50,
+        "hl": "vi",
+        "key": key,
+    }
+    r = session.get("https://www.googleapis.com/youtube/v3/videos", params=params, timeout=30)
+    if r.status_code != 200:
+        raise RuntimeError(f"YouTube Data API videos.list HTTP {r.status_code}")
+    items = r.json().get("items", [])
+    if not items:
+        raise RuntimeError("YouTube Data API videos.list trả về 0 video")
+
+    out = []
+    for rank, x in enumerate(items, start=1):
+        sn, stats = x.get("snippet") or {}, x.get("statistics") or {}
+        vid = x.get("id")
+        title, artists = _api_title_artists(sn.get("title"), sn.get("channelTitle"))
+        thumbs = (sn.get("thumbnails") or {})
+        thumb = next((thumbs[k].get("url") for k in ("maxres", "standard", "high", "medium", "default")
+                      if thumbs.get(k)), None)
+        tr = track_fields(title, artists, "youtube", platform_id=vid,
+                          url=f"https://www.youtube.com/watch?v={vid}" if vid else None,
+                          thumbnail=thumb, duration_s=_duration_seconds((x.get("contentDetails") or {}).get("duration")),
+                          release_date=(sn.get("publishedAt") or "")[:10] or None)
+        tr["raw_title"] = sn.get("title")
+        tr["uploader_name"] = sn.get("channelTitle")
+        tr["artist_resolution"] = "parsed" if artists else "unresolved"
+        meta = {"currentPosition": rank, "previousPosition": None,
+                "_total_plays": int(stats["viewCount"]) if stats.get("viewCount") else None,
+                "_total_likes": int(stats["likeCount"]) if stats.get("likeCount") else None}
+        out.append(("youtube_most_popular_music_vn", vid, tr, stats.get("viewCount"), meta))
+    log.info("youtube Data API mostPopular music: %d videos", len(out))
+    return out
+
+
+def chart_videos(session):
+    """Ưu tiên YouTube Music Charts; tự chuyển sang Data API nếu endpoint web bị chặn."""
+    try:
+        items = _internal_chart_videos(session)
+        if not items:
+            raise RuntimeError("empty YouTube chart")
+        return items
+    except Exception as e:  # noqa: BLE001 - endpoint web thường trả 429 theo IP
+        key = os.getenv("YOUTUBE_API_KEY", "").strip()
+        if not key:
+            raise RuntimeError(
+                "YouTube Charts web không truy cập được; hãy đặt YOUTUBE_API_KEY để dùng "
+                "videos.list(chart=mostPopular) làm nguồn dự phòng"
+            ) from e
+        report_issue("youtube_weekly_charts", "fallback_most_popular:" + type(e).__name__)
+        return _api_popular_music(session, key)
+
+
 def crawl_charts(session, crawled_ms):
     items = chart_videos(session)
     sizes = {}
     for chart_id, _, _, _, _ in items:
         sizes[chart_id] = sizes.get(chart_id, 0) + 1
     for chart_id, _, tr, views, meta in items:
+        metric_name = "view_count" if chart_id == "youtube_most_popular_music_vn" else "weekly_views"
         yield TOPIC_CHARTS, tr["track_key"], chart_entry(
             chart_id, crawled_ms, meta.get("currentPosition"), sizes[chart_id], tr,
-            previous_rank=meta.get("previousPosition"), metric_name="weekly_views",
-            metric_value=int(views) if views else None, granularity_min=60)
+            previous_rank=meta.get("previousPosition"), metric_name=metric_name,
+            metric_value=int(views) if views else None, total_plays=meta.get("_total_plays"),
+            total_likes=meta.get("_total_likes"), granularity_min=30,
+            scope=COUNTRY.upper(), source_cadence="unknown" if metric_name == "view_count" else "weekly")
     # BXH nghệ sĩ: record_type riêng, không có track_key
-    artists = _browse(session, "ARTISTS")
+    artists = []
+    # Data API không có chart nghệ sĩ tương đương; chỉ lấy khi endpoint Charts web đang hoạt động.
+    if any(chart_id.startswith("youtube_top_") for chart_id, _, _, _, _ in items):
+        try:
+            artists = _browse(session, "ARTISTS")
+        except Exception as e:  # noqa: BLE001 - vẫn giữ được chart bài/video đã crawl
+            report_issue("youtube_artists", type(e).__name__)
     for x in artists:
         meta = x.get("chartEntryMetadata", {})
         rec = {"record_type": "artist_entry", "chart_id": "youtube_top_artists_vn_weekly", "chart_scope": "VN",
@@ -109,6 +240,9 @@ def crawl_charts(session, crawled_ms):
                "previous_rank": meta.get("previousPosition"), "metric_name": "weekly_views",
                "metric_value": float(x.get("viewCount") or 0), "artists": [x.get("name")], "source": "youtube",
                "title": x.get("name"), "track_key": None, "platform_id": x.get("externalChannelId")}
+        rec["chart_scope"] = COUNTRY.upper()
+        rec["snapshot_id"] = snapshot_id(rec["chart_id"], crawled_ms)
+        rec.update(source_metadata("weekly"))
         yield TOPIC_CHARTS, None, rec
     log.info("youtube charts: %s + %d artists", sizes, len(artists))
 
@@ -116,28 +250,59 @@ def crawl_charts(session, crawled_ms):
 # ------------------------------------------------------------------ comments
 def _api_comments(session, key, video_id, max_n, since_ms):
     params = dict(part="snippet", videoId=video_id, maxResults=100, order="time", textFormat="plainText", key=key)
+    # Incremental collection scans the whole requested window, even beyond max_n.
+    # A separate safety ceiling bounds quota consumption and reports incomplete windows.
+    limit = int(os.getenv("YT_COMMENT_MAX_SCAN", "10000")) if since_ms else max_n
+    if limit <= 0:
+        raise ValueError("comment scan limit must be positive")
     got = 0
-    while got < max_n:
-        r = session.get("https://www.googleapis.com/youtube/v3/commentThreads", params=params, timeout=25)
-        if r.status_code in (403, 404):  # tắt bình luận / hết quota
-            log.warning("comments %s: HTTP %s %s", video_id, r.status_code, r.text[:120])
+    seen, pages = set(), set()
+    max_pages = int(os.getenv("YT_COMMENT_MAX_PAGES", "100"))
+    if max_pages <= 0:
+        raise ValueError("comment page limit must be positive")
+    requested = 0
+    while got < limit:
+        if requested >= max_pages:
+            report_issue(video_id, "comment_page_limit")
             return
-        r.raise_for_status()
+        requested += 1
+        r = session.get("https://www.googleapis.com/youtube/v3/commentThreads", params=params, timeout=25)
+        if r.status_code != 200:
+            try:
+                reasons = {x.get("reason") for x in r.json().get("error", {}).get("errors", [])}
+            except (ValueError, AttributeError, TypeError):
+                reasons = set()
+            if "commentsDisabled" in reasons or "videoNotFound" in reasons:
+                log.info("comments unavailable for video %s", video_id)
+                return
+            raise RuntimeError(f"YouTube comments HTTP {r.status_code}")
         data = r.json()
-        for it in data.get("items", []):
+        items = data.get("items", [])
+        for i, it in enumerate(items):
             sn = it["snippet"]["topLevelComment"]["snippet"]
             pub = int(datetime.fromisoformat(sn["publishedAt"].replace("Z", "+00:00")).timestamp() * 1000)
             if since_ms and pub < since_ms:
                 return  # order=time -> các bình luận sau còn cũ hơn
-            yield dict(comment_id=it["id"], text=sn.get("textOriginal") or sn.get("textDisplay") or "",
+            cid = it["snippet"]["topLevelComment"]["id"]
+            if cid in seen:
+                continue
+            seen.add(cid)
+            yield dict(comment_id=cid, text=sn.get("textOriginal") or sn.get("textDisplay") or "",
                        like_count=int(sn.get("likeCount") or 0), published_ms=pub, is_reply=False,
                        author_hash=author_hash((sn.get("authorChannelId") or {}).get("value")))
             got += 1
-            if got >= max_n:
+            if got >= limit:
+                if since_ms and (i + 1 < len(items) or data.get("nextPageToken")):
+                    report_issue(video_id, "comment_window_truncated")
                 return
         if not data.get("nextPageToken"):
             return
-        params["pageToken"] = data["nextPageToken"]
+        token = data["nextPageToken"]
+        if token in pages:
+            report_issue(video_id, "repeated_page_token")
+            return
+        pages.add(token)
+        params["pageToken"] = token
 
 
 def _scrape_comments(video_id, max_n, since_ms, sort="recent"):
@@ -146,15 +311,22 @@ def _scrape_comments(video_id, max_n, since_ms, sort="recent"):
 
     dl = YoutubeCommentDownloader()
     gen = dl.get_comments(video_id, sort_by=SORT_BY_RECENT if sort == "recent" else SORT_BY_POPULAR, language="en")
-    old_streak = 0
-    for c in itertools.islice(gen, max_n):
+    limit = int(os.getenv("YT_COMMENT_MAX_SCAN", "10000")) if since_ms and sort == "recent" else max_n
+    if limit <= 0:
+        raise ValueError("comment scan limit must be positive")
+    for index, c in enumerate(itertools.islice(gen, limit + 1)):
+        if index == limit:
+            if since_ms and sort == "recent":
+                report_issue(video_id, "comment_window_truncated")
+            return
         pub = int(c["time_parsed"] * 1000) if c.get("time_parsed") else None
         if sort == "recent" and since_ms and pub and pub < since_ms:
-            old_streak += 1
-            if old_streak >= 20:  # thứ tự "mới nhất" không tuyệt đối -> dừng khi gặp 20 cái cũ liên tiếp
-                return
+            # Replies and top-level comments can be interleaved. Old timestamps
+            # cannot prove the remainder is old; scan to exhaustion or the cap.
             continue
-        old_streak = 0
+        if since_ms and pub is None:
+            report_issue(video_id, "comment_timestamp_missing")
+            continue
         yield dict(comment_id=c.get("cid"), text=c.get("text") or "", like_count=parse_count(c.get("votes")),
                    published_ms=pub, is_reply=bool(c.get("reply")), author_hash=author_hash(c.get("channel")))
 
@@ -202,62 +374,82 @@ def _zing_candidates(session):
                 songs = (z.playlist(pl["encodeId"]).get("song") or {}).get("items", [])
                 out.extend(src_zing._track(it) for it in songs[:per_pl])
     except Exception as e:  # noqa: BLE001
-        log.warning("zing candidates failed: %s", e)
+        report_issue("zing_comment_candidates", type(e).__name__)
     return out
 
 
 def crawl_comments(session, crawled_ms, shard_index=0, shard_count=1, since_hours=None):
+    if shard_count < 1 or not 0 <= shard_index < shard_count:
+        raise ValueError("invalid comment shard")
     top_n = int(os.getenv("YT_COMMENT_VIDEOS", "60"))
     recent_n = int(os.getenv("YT_COMMENTS_PER_VIDEO", "200"))
     popular_n = int(os.getenv("YT_POPULAR_PER_VIDEO", "100"))
+    if top_n <= 0 or recent_n <= 0 or popular_n < 0:
+        raise ValueError("invalid comment limits")
     key = os.getenv("YOUTUBE_API_KEY", "").strip()
     since_ms = crawled_ms - int(float(since_hours) * 3_600_000) if since_hours else None
 
     # 1) ứng viên: video trên BXH YouTube (đã có id) + bài hot trên Zing (cần search id)
     cands, seen = [], set()
-    for _, vid, tr, _, meta in sorted(chart_videos(session), key=lambda x: x[4].get("currentPosition") or 999):
+    try:
+        youtube_candidates = chart_videos(session)
+    except Exception as e:  # noqa: BLE001 - vẫn có thể lấy ứng viên Zing và scrape bình luận
+        report_issue("youtube_comment_candidates", type(e).__name__)
+        youtube_candidates = []
+    for _, vid, tr, _, meta in sorted(youtube_candidates, key=lambda x: x[4].get("currentPosition") or 999):
         if vid and tr["track_key"] not in seen and len(cands) < top_n:
             seen.add(tr["track_key"])
             cands.append((vid, tr))
     if os.getenv("YT_COMMENT_ZING_EXTRA", "true").lower() == "true":
         for tr in _zing_candidates(session):
+            if len(cands) >= top_n:
+                break
             if tr["track_key"] not in seen:
                 seen.add(tr["track_key"])
                 cands.append((None, tr))
     # 2) chia shard: pod thứ i xử lý phần tử i, i+n, i+2n...
+    if not cands:
+        report_issue("comments", "no_video_candidates")
     mine = cands[shard_index::shard_count]
     log.info("comments: shard %d/%d -> %d/%d videos, mode=%s, since=%s", shard_index, shard_count, len(mine),
              len(cands), "api" if key else "scrape", iso(since_ms) if since_ms else "all")
 
+    emitted, visited = set(), set()
     for vid, tr in mine:
         if not vid:
             try:
                 vid = search_video(session, f"{tr['title']} {' '.join(tr['artists'][:1])}")
             except Exception as e:  # noqa: BLE001
-                log.warning("search %s failed: %s", tr["track_key"], e)
+                report_issue("video_search", type(e).__name__)
             if not vid:
+                report_issue("video_search", "no_matching_video")
                 continue
+        if vid in visited:
+            continue
+        visited.add(vid)
         n = 0
         if key:
             sources = [("recent", lambda: _api_comments(session, key, vid, recent_n, since_ms))]
         else:
-            sources = [("popular", lambda: _scrape_comments(vid, popular_n, None, "popular")),
-                       ("recent", lambda: _scrape_comments(vid, recent_n, since_ms, "recent"))]
+            sources = [("recent", lambda: _scrape_comments(vid, recent_n, since_ms, "recent"))]
+            if popular_n:
+                sources.append(("popular", lambda: _scrape_comments(vid, popular_n, None, "popular")))
         for label, make in sources:
             # chế độ scrape đôi khi trả về rỗng tạm thời -> thử lại 1 lần
             for attempt in range(2):
                 got = 0
                 try:
                     for c in make():
-                        if not c["comment_id"] or not c["text"].strip():
+                        if not c["comment_id"] or not c["text"].strip() or c["comment_id"] in emitted:
                             continue
+                        emitted.add(c["comment_id"])
                         rec = {"record_type": "comment", "source": "youtube", "video_id": vid, "crawled_ms": crawled_ms,
                                "track_key": tr["track_key"], "title": tr["title"], "artists": tr["artists"],
                                "comment_sort": label, **c}
                         yield TOPIC_COMMENTS, tr["track_key"], rec
                         got += 1
                 except Exception as e:  # noqa: BLE001 - 1 video lỗi không dừng cả job
-                    log.warning("comments %s/%s failed after %d: %s", vid, label, got, e)
+                    report_issue(f"{vid}/{label}", type(e).__name__)
                 n += got
                 if got > 0 or key or (label == "recent" and since_ms):
                     break
@@ -272,7 +464,7 @@ def crawl_geo(session, crawled_ms):
 
     key = os.getenv("YOUTUBE_API_KEY", "").strip()
     if not key:
-        log.warning("YOUTUBE_API_KEY chưa đặt -> bỏ qua geo search")
+        report_issue("geo", "missing_api_key")
         return
     after = datetime.fromtimestamp(crawled_ms / 1000 - 30 * 86400, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     for p in PROVINCES:
@@ -281,7 +473,7 @@ def crawl_geo(session, crawled_ms):
                       maxResults=25, regionCode="VN", key=key)
         r = session.get("https://www.googleapis.com/youtube/v3/search", params=params, timeout=25)
         if r.status_code != 200:
-            log.warning("geo %s: HTTP %s %s", p["code"], r.status_code, r.text[:150])
+            report_issue("geo:" + p["code"], f"HTTP_{r.status_code}")
             if r.status_code == 403:
                 return  # hết quota
             continue
@@ -294,6 +486,7 @@ def crawl_geo(session, crawled_ms):
             vid = it["id"]["videoId"]
             tr = track_fields(title, artist, "youtube", platform_id=vid, url=f"https://www.youtube.com/watch?v={vid}",
                               thumbnail=((sn.get("thumbnails") or {}).get("high") or {}).get("url"))
+            tr["geo_signal"] = "video_geotag"  # location of a video, never a listener's location
             yield TOPIC_CHARTS, tr["track_key"], chart_entry("youtube_geo_search", crawled_ms, rank, len(items), tr,
                                                              scope=p["code"], granularity_min=720)
         log.info("geo %s: %d videos", p["code"], len(items))

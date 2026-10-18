@@ -12,7 +12,7 @@ import os
 import time
 from datetime import datetime, timezone
 
-from common import TOPIC_CHARTS, TOPIC_PLAYLISTS, chart_entry, playlist_item, track_fields
+from common import TOPIC_CHARTS, TOPIC_PLAYLISTS, chart_entry, playlist_item, track_fields, report_issue
 
 log = logging.getLogger("zing")
 BASE = "https://zingmp3.vn"
@@ -96,11 +96,13 @@ def crawl_charts(session, crawled_ms):
                     info_cache[sid] = z.song_info(sid)
                     time.sleep(0.15)
                 except Exception as e:  # noqa: BLE001 - 1 bài lỗi không làm hỏng cả lượt crawl
-                    log.warning("song-info %s failed: %s", sid, e)
+                    report_issue("song-info:" + sid, type(e).__name__)
                     info_cache[sid] = {}
 
     for chart_id, items, metric in lists:
         n = len(items)
+        if not n:
+            report_issue(chart_id, "empty_chart")
         for rank, it in enumerate(items, start=1):
             info = info_cache.get(it.get("encodeId"), {})
             genres = [g.get("name") for g in info.get("genres", []) if g.get("name")]
@@ -110,7 +112,8 @@ def crawl_charts(session, crawled_ms):
             yield TOPIC_CHARTS, t["track_key"], chart_entry(
                 chart_id, crawled_ms, rank, n, t, previous_rank=prev,
                 metric_name=metric, metric_value=it.get("score") if metric else None,
-                total_plays=info.get("listen"), total_likes=info.get("like"))
+                total_plays=info.get("listen"), total_likes=info.get("like"),
+                source_cadence="weekly" if chart_id == "zing_week_vn" else "unknown")
     log.info("zing charts: %s", {c: len(i) for c, i, _ in lists})
 
 
@@ -128,11 +131,13 @@ def crawl_playlists(session, crawled_ms):
         try:
             data = z.playlist(pid)
         except Exception as e:  # noqa: BLE001
-            log.warning("playlist %s failed: %s", pid, e)
+            report_issue(pid, type(e).__name__)
             continue
         hint = genre_hint_from_playlist(name)
         genres = [g.get("name") for g in data.get("genres", []) if g.get("name")]
         songs = (data.get("song") or {}).get("items", [])
+        if not songs:
+            report_issue(pid, "empty_playlist")
         for pos, it in enumerate(songs, start=1):
             t = _track(it, genres)
             yield TOPIC_PLAYLISTS, t["track_key"], playlist_item(f"zing:{pid}", name, hint, crawled_ms, pos, t)

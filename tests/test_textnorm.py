@@ -62,6 +62,8 @@ def test_youtube_video_titles():
     assert clean_video_title("Trăm Năm Chỉ Một Người – Một Đời Chỉ Yêu Một Người | Hoàng K Official",
                              ["Hoàng K Official"]) == "Trăm Năm Chỉ Một Người – Một Đời Chỉ Yêu Một Người"
     assert clean_video_title("LƯU NIÊN", ["Jack - J97"]) == "LƯU NIÊN"
+    assert clean_video_title("LƯU NIÊN - NGUYỄN ĐÌNH VŨ | JACK J97 | TAM THÁI TỬ | COVER",
+                             ["Nguyễn Đình Vũ"]) == "LƯU NIÊN"
     assert clean_channel_name("DatG Music") == "DatG"
     assert clean_channel_name("Hoàng K Official") == "Hoàng K"
 
@@ -140,6 +142,15 @@ def test_parse_count():
     assert parse_count("12 N") == 12000
     assert parse_count("1.234") == 1234
     assert parse_count(None) == 0
+
+
+def test_unicode_normalization_and_duplicate_artists():
+    import unicodedata
+    title = "Tìm Em"
+    artist = "Bảo Anh"
+    assert clean_title(unicodedata.normalize("NFD", title)) == title
+    assert split_artists([artist, unicodedata.normalize("NFD", artist), None]) == [artist]
+    assert track_key(unicodedata.normalize("NFD", title), [artist]) == track_key(title, [artist])
 
 
 if __name__ == "__main__":

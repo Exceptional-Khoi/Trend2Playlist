@@ -8,7 +8,10 @@ import logging
 import os
 import sys
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -26,8 +29,54 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 
 log = logging.getLogger("music")
 
+_issues = ContextVar("crawl_issues", default=None)
+
+
+@contextmanager
+def capture_issues():
+    """Collect recoverable failures without dropping records from healthy endpoints."""
+    issues = []
+    token = _issues.set(issues)
+    try:
+        yield issues
+    finally:
+        _issues.reset(token)
+
+
+def report_issue(component, reason):
+    # Callers pass codes, never raw HTTP exceptions (URLs may contain API keys).
+    issue = {"component": str(component), "reason": str(reason)}
+    current = _issues.get()
+    if current is not None:
+        current.append(issue)
+    log.warning("crawl issue: %s", json.dumps(issue, ensure_ascii=False))
+
+
+def source_metadata(cadence="unknown", updated_at=None):
+    """Only a timestamp published by the source can establish source freshness.
+
+    crawled_ms and snapshot_id continue to describe collection time, not source updates.
+    These additive fields are safe for existing consumers that select known columns.
+    """
+    updated_ms = None
+    if updated_at:
+        try:
+            try:
+                dt = datetime.fromisoformat(str(updated_at).replace("Z", "+00:00"))
+            except ValueError:
+                dt = parsedate_to_datetime(str(updated_at))
+            if dt.tzinfo is not None:
+                updated_ms = int(dt.timestamp() * 1000)
+        except (ValueError, TypeError, OverflowError):
+            pass
+    return {"source_cadence": cadence, "source_updated_ms": updated_ms,
+            "source_freshness": "published_timestamp" if updated_ms is not None else "unknown"}
+
 
 def setup_logging():
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"),
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stdout)
 
@@ -148,6 +197,8 @@ def track_fields(title, artists, source, platform_id=None, url=None, thumbnail=N
                  genres=None, release_date=None, album=None):
     """Các trường mô tả bài hát, dùng chung cho mọi topic."""
     tn = _textnorm()
+    if not isinstance(title, str) or not title.strip():
+        raise ValueError("track title must be nonempty text")
     arts = tn.split_artists(artists)
     return {
         "track_key": tn.track_key(title, arts),
@@ -166,7 +217,12 @@ def track_fields(title, artists, source, platform_id=None, url=None, thumbnail=N
 
 
 def chart_entry(chart_id, crawled_ms, rank, chart_size, track, previous_rank=None, metric_name=None,
-                metric_value=None, total_plays=None, total_likes=None, scope="VN", granularity_min=30):
+                metric_value=None, total_plays=None, total_likes=None, scope="VN", granularity_min=30,
+                source_cadence="unknown", source_updated_at=None):
+    if rank is None or not 1 <= int(rank) <= int(chart_size):
+        raise ValueError("chart rank must be within chart size")
+    if granularity_min <= 0:
+        raise ValueError("snapshot granularity must be positive")
     rec = {
         "record_type": "chart_entry",
         "chart_id": chart_id,
@@ -175,13 +231,14 @@ def chart_entry(chart_id, crawled_ms, rank, chart_size, track, previous_rank=Non
         "crawled_ms": crawled_ms,
         "rank": int(rank),
         "chart_size": int(chart_size),
-        "previous_rank": int(previous_rank) if previous_rank else None,
+        "previous_rank": int(previous_rank) if previous_rank and int(previous_rank) > 0 else None,
         "metric_name": metric_name,
         "metric_value": float(metric_value) if metric_value is not None else None,
         "total_plays": int(total_plays) if total_plays is not None else None,
         "total_likes": int(total_likes) if total_likes is not None else None,
     }
     rec.update(track)
+    rec.update(source_metadata(source_cadence, source_updated_at))
     return rec
 
 
