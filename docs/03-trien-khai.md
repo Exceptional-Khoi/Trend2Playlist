@@ -23,7 +23,7 @@ minikube start --driver=docker --cpus=6 --memory=12g --disk-size=40g
 minikube addons enable metrics-server          # cần cho HPA
 
 cd "D:\Data Storage and Processing\Project"
-copy .env.example .env                          # (tuỳ chọn) điền YOUTUBE_API_KEY
+copy .env.example .env                          # nên điền YOUTUBE_API_KEY để có fallback ổn định
 .\scripts\run.ps1 deploy                        # ~10-15 phút lần đầu (kéo image ~4 GB)
 .\scripts\run.ps1 bootstrap-data                # crawl + backfill + batch view đầu tiên (~20 phút)
 minikube service -n music music-api             # mở dashboard
@@ -90,7 +90,9 @@ Sau khi sửa code: `./scripts/update-code.sh` (cập nhật ConfigMap và resta
 | Speed layer OOM khi tải lớn | Bật `STATE_STORE=rocksdb` (mặc định trong ConfigMap), tăng `EXECUTOR_MEMORY`/số worker; giảm tải `SIM_EVENTS_PER_SEC` |
 | Spark job trên Windows crash trong `librocksdbjni` | Chỉ dùng RocksDB trên Linux/k8s; khi test cục bộ trên Windows để trống `STATE_STORE` |
 | Crawl Zing lỗi `err=-201`/chữ ký | Zing đổi khoá web: cập nhật `ZING_API_KEY`, `ZING_SECRET_KEY`, `ZING_VERSION` trong `.env` rồi deploy lại |
+| YouTube Charts lỗi `429` | Điền `YOUTUBE_API_KEY`; crawler tự fallback sang `videos.list(chart=mostPopular, category=Music, region=VN)` và lưu bằng `chart_id` riêng |
 | Bình luận YouTube = 0 | Bị giới hạn tạm thời: đặt `YOUTUBE_API_KEY`, hoặc giảm `YT_COMMENT_VIDEOS` |
+| Job báo `PARTIAL SUCCESS` | Một nguồn lỗi nhưng nguồn khác đã ghi Kafka thành công; mặc định không chặn bootstrap. Đặt `FAIL_ON_PARTIAL=true` nếu muốn chế độ nghiêm ngặt |
 | Google Trends 429 liên tục | Tăng `TRENDS_SLEEP_SEC` (60–90) hoặc giảm `TRENDS_TOP_N` trong CronJob `crawl-trends`; Google chặn theo IP nên tránh chạy nhiều lần liền |
 | Tỉnh nào cũng độ tin cậy "thấp" | Chưa có số liệu Trends (CronJob chạy lúc 4h sáng): tạo job `trends-now` như trên rồi chạy lại `batch-views` |
 | Dashboard không hiện bản đồ | Trình duyệt cần Internet để tải nền bản đồ Esri và thư viện ECharts/Leaflet (CDN jsDelivr) |
@@ -102,7 +104,7 @@ Sau khi sửa code: `./scripts/update-code.sh` (cập nhật ConfigMap và resta
 pip install -r crawler/requirements.txt
 python crawler/run_crawler.py --job charts --sink stdout                 # xem dữ liệu crawl
 python crawler/run_crawler.py --job all --sink jsonl --jsonl-dir out      # lưu mẫu để test Spark
-python tests/test_textnorm.py                                             # unit test
+python -m pytest tests -q                                                # unit test
 
 # Spark local (Linux/WSL, cần Java 17 + pyspark 3.5.9):
 spark-submit local/seed_lake.py out file:///tmp/music

@@ -1,0 +1,14 @@
+{
+  "canonical_track_id": "trk_...",
+  "title": "...",
+  "artists": ["..."],
+  "isrc": "...",
+  "ids": {
+    "spotify": null,
+    "apple_music": null,
+    "youtube": null,
+    "zing_mp3": null
+  },
+  "genres": [],
+  "aliases": []
+}

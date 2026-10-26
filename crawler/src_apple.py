@@ -5,7 +5,7 @@ import os
 from common import TOPIC_CHARTS, chart_entry, track_fields
 
 log = logging.getLogger("apple")
-FEED = "https://rss.applemarketingtools.com/api/v2/{country}/music/most-played/{limit}/songs.json"
+FEED = "https://rss.marketingtools.apple.com/api/v2/{country}/music/most-played/{limit}/songs.json"
 
 
 def crawl_charts(session, crawled_ms):

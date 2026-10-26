@@ -13,6 +13,31 @@ import os
 import sys
 import time
 
+
+def _load_local_env():
+    """Nạp .env khi chạy local, không ghi đè biến đã được k8s/CI cung cấp.
+
+    Không dùng python-dotenv để giữ image crawler gọn và tránh thêm dependency chỉ
+    cho vài cặp KEY=VALUE. Secret không bao giờ được log tại đây.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+    if not os.path.isfile(path):
+        return
+    with open(path, encoding="utf-8-sig") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key, value = key.strip(), value.strip()
+            if not key or not key.replace("_", "").isalnum():
+                continue
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            os.environ.setdefault(key, value)
+
+
+_load_local_env()
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared"))
 
 import src_apple  # noqa: E402
@@ -72,9 +97,12 @@ def main():
                 failed.append(f"{job}/{name}")
     sink.close()
     log.info("DONE in %.1fs: sent=%d errors=%d ok=%s failed=%s", time.time() - t0, sink.count, sink.errors, ok, failed)
-    # Exit != 0 khi có nguồn lỗi -> k8s đánh dấu Job thất bại (thấy được trong `kubectl get jobs`) và thử lại;
-    # các nguồn đã thành công bị crawl lại cũng không sao vì batch layer khử trùng theo snapshot.
-    if sink.count == 0 or sink.errors > 0 or failed:
+    # Chịu lỗi theo nguồn: một endpoint web bị chặn không được làm hỏng dữ liệu các nền tảng còn lại
+    # hoặc chặn bootstrap. Vẫn có thể bật chế độ nghiêm ngặt để CI/monitoring bắt partial failure.
+    fail_on_partial = os.getenv("FAIL_ON_PARTIAL", "false").lower() in ("1", "true", "yes")
+    if failed and not fail_on_partial and sink.count > 0 and sink.errors == 0:
+        log.warning("PARTIAL SUCCESS: đã giữ %d records; nguồn lỗi=%s", sink.count, failed)
+    if sink.count == 0 or sink.errors > 0 or (failed and fail_on_partial):
         sys.exit(1)
 
 

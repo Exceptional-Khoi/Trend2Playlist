@@ -28,6 +28,12 @@ log = logging.getLogger("music")
 
 
 def setup_logging():
+    # Windows terminals commonly default to cp1252, which cannot print Vietnamese
+    # titles.  A debug/stdout crawl must never fail because of its output codec.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"),
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stdout)
 

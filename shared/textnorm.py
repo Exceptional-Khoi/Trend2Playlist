@@ -110,7 +110,18 @@ def clean_video_title(title, artists):
     """
     segs = [x.strip(" '\"“”‘’") for x in re.split(r"[|｜]", title or "") if x.strip(" '\"“”‘’")]
     keep = [x for x in segs if not _VIDEO_NOISE.search(x)] or segs[:1]
-    cand = [x for x in keep if not _is_artist(x, artists)] or keep
+    # Không bỏ cả segment "TÊN BÀI - NGHỆ SĨ" chỉ vì nó chứa tên nghệ sĩ.
+    # Nhưng vẫn bỏ segment chỉ có nghệ sĩ như "JACK - J97" hay "PHƯƠNG MỸ CHI x DTAP".
+    artist_compact = {_compact(a) for a in split_artists(artists)}
+    cand = []
+    for x in keep:
+        parts = re.split(r"\s+[-–—]\s+", x, maxsplit=1)
+        whole_is_artist = _compact(x) in artist_compact
+        mixed_song_artist = (len(parts) == 2 and
+                             (_is_artist(parts[0], artists) != _is_artist(parts[1], artists)))
+        if not whole_is_artist and (mixed_song_artist or not _is_artist(x, artists)):
+            cand.append(x)
+    cand = cand or keep
     t = cand[0] if cand else (title or "")
     parts = re.split(r"\s+[-–—]\s+", t, maxsplit=1)
     if len(parts) == 2:

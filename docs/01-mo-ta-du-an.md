@@ -15,11 +15,11 @@ không lấy nền tảng video ngắn như TikTok.
 | Zing MP3 | `zingmp3.vn/api/v2/page/get/chart-home` (#zingchart realtime, BXH tuần, nhạc mới) · `/page/get/top-100` · `/page/get/playlist` · `/song/get/info` | hạng, điểm realtime, lượt nghe, lượt thích, thể loại; ~40 playlist "Top 100" theo thể loại | 30 phút; playlist 6 giờ |
 | Spotify | `open.spotify.com/embed/playlist/<id>`: Top 50 Vietnam, Top Songs Vietnam (tuần), Hot Hits Vietnam | hạng, tên bài, nghệ sĩ, thời lượng, id bài | 30 phút |
 | Spotify (số stream) | `kworb.net/spotify/country/vn_daily.html` (tổng hợp từ Spotify Charts) | lượt stream ngày, tổng stream, thay đổi hạng | 30 phút |
-| Apple Music | `rss.applemarketingtools.com/api/v2/vn/music/most-played/100/songs.json` | hạng, thể loại, ngày phát hành, ảnh bìa | 30 phút |
-| YouTube Charts | `charts.youtube.com` (endpoint `youtubei/v1/browse`): Top bài hát, Top video, Top nghệ sĩ Việt Nam theo tuần | hạng, hạng tuần trước, lượt xem tuần, id video | 30 phút |
+| Apple Music | `rss.marketingtools.apple.com/api/v2/vn/music/most-played/100/songs.json` | hạng, thể loại, ngày phát hành, ảnh bìa | 30 phút |
+| YouTube Charts | `charts.youtube.com` (endpoint `youtubei/v1/browse`): Top bài hát, Top video, Top nghệ sĩ Việt Nam theo tuần; khi bị 429 dùng YouTube Data API `videos.list?chart=mostPopular&videoCategoryId=10&regionCode=VN` với `chart_id` riêng | hạng, hạng tuần trước, lượt xem tuần, id video; fallback có tổng view/like nhưng không được coi là BXH tuần | 30 phút |
 | YouTube bình luận | video trên BXH YouTube + video của bài hot trên Zing (tìm qua `youtubei/v1/search`); YouTube Data API v3 nếu có key | nội dung bình luận (không lưu tên/ID người viết), lượt thích, thời gian | mỗi giờ, 3 pod song song |
 | **Google Trends** | `trends.google.com/trends/api/explore` + `widgetdata/comparedgeo` (property = YouTube search, 7 ngày) | tỉ lệ lượt tìm của từng bài ở **63 tỉnh cũ** (mã ISO VN-xx), so với 1 bài mốc | mỗi ngày, 40 bài |
-| YouTube geo (tuỳ chọn) | YouTube Data API `search.list?location=lat,lng&locationRadius=60km` | video âm nhạc gắn vị trí gần từng tỉnh | hằng ngày |
+| YouTube geo (tuỳ chọn) | YouTube Data API `search.list?location=lat,lng&locationRadius=60km` | video âm nhạc có metadata geotag gần từng tỉnh; **không phải vị trí hoặc lượt nghe của khán giả** | hằng ngày |
 
 Nguồn đã thử nhưng loại bỏ: Deezer (bị chặn tại VN), Shazam (chỉ có Top 200 toàn quốc, không có BXH thành phố VN),
 Apple Music City Charts (không có thành phố Việt Nam), bình luận Zing MP3 (web không có API bình luận bài hát),
@@ -29,7 +29,7 @@ TikTok (nền tảng ngắn, ngoài phạm vi). Google Trends lúc đầu trả 
 
 ### 1. Thu thập dữ liệu
 
-Bốn loại bản ghi, mỗi loại một Kafka topic:
+Năm loại bản ghi, mỗi loại một Kafka topic:
 
 | Topic | Một bản ghi = | Trường chính |
 |---|---|---|
