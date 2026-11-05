@@ -37,3 +37,16 @@ python -m pytest tests -q
 ```
 
 Kiểm thử ES riêng (không phải deploy production): đặt ES_URL trỏ ES thử nghiệm, nạp dữ liệu bằng scripts/import-insight-archive.py rồi chạy scripts/check-insights-es.py. Script integration dùng bằng chứng country ngày 05/10/2026, cần archive tương ứng trên máy; archive không nằm trong Git.
+
+## Kiểm thử tích hợp Elasticsearch cục bộ — 05/11/2026
+
+- Tải và chạy image `docker.elastic.co/elasticsearch/elasticsearch:8.19.22` trong container riêng; chỉ bind `127.0.0.1:19200`, không gắn volume dữ liệu. Cluster health trả `green`.
+- Đăng ký index template rồi nhập 4.438 bản ghi từ archive hiện có vào `music-insight-raw`; ngày và nhãn nguồn được giữ nguyên.
+- Chạy API thật qua Uvicorn ở `127.0.0.1:18000`, cấu hình `INSIGHT_BACKEND=elasticsearch`. Trang dashboard trả HTTP 200; cả bốn endpoint trả HTTP 200 và xác nhận `mode=elasticsearch`, mỗi endpoint đọc 4.438 bản ghi:
+  - `lifecycle`: 2.247 kết quả.
+  - `playlists`: 0 kết quả; archive hiện tại không có đủ bằng chứng playlist editorial để tạo quan sát.
+  - `countries`: 99 bài; kiểm tra VN/TH cùng ngày đạt 1 bài giao nhau và Jaccard `1/99`.
+  - `feedback`: 1 nhóm thao tác.
+- Route `/legacy` trả 404 như thiết kế.
+
+Đây là kiểm thử tích hợp cục bộ với Elasticsearch thật, chưa phải kiểm thử GKE. Luồng ghi sự kiện qua Kafka chưa chạy vì hiện không có broker Kafka trong Docker; do đó chưa xác nhận được thao tác dashboard đi hết vòng Kafka → Spark → Elasticsearch. Phần này cùng kiểm thử GKE vẫn cần làm khi có cluster và quyền truy cập Google Cloud.
