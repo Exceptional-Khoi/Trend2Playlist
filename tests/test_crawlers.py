@@ -7,6 +7,26 @@ sys.path.insert(0, os.path.join(ROOT, "crawler"))
 sys.path.insert(0, os.path.join(ROOT, "shared"))
 
 import src_youtube  # noqa: E402
+import src_spotify
+from pathlib import Path
+
+
+def test_kworb_preserves_native_period_and_country():
+    import pytest
+    archive = Path(ROOT) / 'out/country-feasibility-20261007T154533Z/http/spotify_kworb_vn.html'
+    if not archive.exists():
+        pytest.skip('Optional local crawl archive is not checked into Git')
+    class Response:
+        text = archive.read_text(encoding='utf-8')
+        def raise_for_status(self):
+            pass
+    class Session:
+        def get(self, *args, **kwargs):
+            return Response()
+    rows = [r for _, _, r in src_spotify.crawl_kworb_daily(Session(), 1000, 'vn')]
+    assert len(rows) == 200
+    assert {r['rank'] for r in rows} == set(range(1,201))
+    assert all(r['source_period']=='2026-10-05' and r['chart_scope']=='VN' and r['chart_size']==200 for r in rows)
 
 
 class _Response:

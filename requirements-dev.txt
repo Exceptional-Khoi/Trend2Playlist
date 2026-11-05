@@ -1,0 +1,4 @@
+-r crawler/requirements.txt
+-r serving/requirements.txt
+pytest>=8,<10
+PyYAML>=6,<7

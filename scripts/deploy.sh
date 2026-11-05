@@ -7,6 +7,7 @@ set -euo pipefail
 export MSYS_NO_PATHCONV=1            # Git Bash: không tự đổi đường dẫn /opt/... thành C:/...
 cd "$(dirname "$0")/.."
 PROFILE=${PROFILE:-lite}
+case "$PROFILE" in lite|full) ;; *) echo "PROFILE must be lite or full" >&2; exit 1 ;; esac
 NS=music
 k() { kubectl -n "$NS" "$@"; }
 step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
@@ -19,7 +20,7 @@ if [ -f .env ]; then
 fi
 
 step "Nạp code vào ConfigMap (không build image Docker)"
-./scripts/update-code.sh --no-restart
+bash ./scripts/update-code.sh --no-restart
 
 step "Kafka (3 broker KRaft), HDFS, Elasticsearch"
 kubectl apply -f k8s/10-kafka.yaml -f k8s/20-hdfs.yaml
@@ -52,11 +53,12 @@ k rollout status deployment/spark-worker --timeout=10m
 
 step "Speed layer, batch CronJob, crawler, bộ giả lập, API + dashboard"
 kubectl apply -f k8s/41-speed-layer.yaml -f k8s/42-batch-jobs.yaml -f k8s/50-crawlers.yaml \
-              -f k8s/51-simulator.yaml -f k8s/60-serving.yaml
+              -f k8s/51-simulator.yaml -f k8s/53-country-charts.yaml -f k8s/60-serving.yaml
 if [ "$PROFILE" = "full" ]; then
   k scale statefulset/listener-sim --replicas=3
 fi
 k rollout status deployment/music-api --timeout=10m
+k rollout status deployment/speed-layer --timeout=15m
 
 step "Xong. Trạng thái:"
 k get pods -o wide

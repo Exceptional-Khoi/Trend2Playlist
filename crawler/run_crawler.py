@@ -50,6 +50,7 @@ from common import http_session, make_sink, now_ms, setup_logging  # noqa: E402
 log = logging.getLogger("crawler")
 
 JOBS = {
+    "countries": [("spotify_kworb", src_spotify.crawl_countries)],
     "charts": [("zing", src_zing.crawl_charts), ("spotify", src_spotify.crawl_charts),
                ("apple_music", src_apple.crawl_charts), ("youtube", src_youtube.crawl_charts)],
     "playlists": [("zing", src_zing.crawl_playlists), ("spotify", src_spotify.crawl_playlists)],

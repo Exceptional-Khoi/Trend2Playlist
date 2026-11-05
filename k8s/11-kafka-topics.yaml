@@ -27,6 +27,7 @@ spec:
                    --replication-factor 3 --config min.insync.replicas=2 --config retention.ms="$3"
               }
               create music.charts    6 2592000000   # 30 ngày
+              create music.country-charts 3 2592000000
               create music.playlists 3 2592000000
               create music.comments  6 1209600000   # 14 ngày
               create music.events    6  604800000   # 7 ngày; tăng partition khi cần nhiều consumer song song hơn

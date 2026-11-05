@@ -15,7 +15,8 @@ run_from_cron() {  # tạo Job từ CronJob với tên cố định (xoá bản 
 step "Crawl BXH + playlist từ Zing MP3, Spotify, Apple Music, YouTube -> Kafka"
 run_from_cron crawl-charts crawl-charts-init
 run_from_cron crawl-playlists crawl-playlists-init
-k wait --for=condition=complete job/crawl-charts-init job/crawl-playlists-init --timeout=20m
+run_from_cron crawl-countries crawl-countries-init
+k wait --for=condition=complete job/crawl-charts-init job/crawl-playlists-init job/crawl-countries-init --timeout=20m
 k logs job/crawl-charts-init --tail=3
 
 step "Backfill: bình luận YouTube (3 pod song song, chạy nền ~15-20 phút) + 7 ngày lịch sử nghe + Google Trends theo tỉnh"

@@ -26,6 +26,7 @@ CKPT = os.getenv("CHECKPOINT_PATH") or BASE + "/checkpoints"   # đổi khi nân
 LOCAL_ES_OUT = os.getenv("LOCAL_ES_OUT", "/tmp/music/es_out")
 
 TOPICS = {
+    "countries": "music.country-charts",
     "charts": os.getenv("TOPIC_CHARTS", "music.charts"),
     "playlists": os.getenv("TOPIC_PLAYLISTS", "music.playlists"),
     "comments": os.getenv("TOPIC_COMMENTS", "music.comments"),

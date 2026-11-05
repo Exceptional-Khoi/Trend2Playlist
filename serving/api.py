@@ -20,6 +20,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import insights
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "shared"))
@@ -363,6 +364,22 @@ async def listen(ev: Listen):
              "track_key": ev.track_key, "title": track.get("title", ev.track_key), "artists": track.get("artists", []),
              "genre": track.get("genre", "Khác"), "duration_ms": dur, "source": "web", "action": ev.action,
              "listen_ms": dur if ev.action == "play" else (8000 if ev.action == "skip" else 0), "ts_ms": ts}
+    if os.getenv('INSIGHT_BACKEND', 'archive') == 'archive':
+        # Actual button clicks in local mode, explicitly separate from Kafka delivery.
+        records, _ = await asyncio.to_thread(insights.load_local)
+        known = next((r for r in records if (r.get('track_key') or insights.identity(r)) == ev.track_key
+                      and r.get('record_type') == 'chart_entry'), None)
+        if not known or not ev.user_id.strip() or len(ev.user_id) > 100:
+            raise HTTPException(400, 'Bài hát hoặc mã người dùng không hợp lệ')
+        event.update(title=known.get('title'), artists=known.get('artists'), genre=known.get('genre_hint') or 'unknown',
+                     listen_ms=None, duration_ms=None)
+        def append_event():
+            path = insights.ROOT / 'out/insight-web-events.jsonl'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open('a', encoding='utf-8') as f:
+                f.write(json.dumps(event, ensure_ascii=False) + '\n')
+        await asyncio.to_thread(append_event)
+        return {'event': event, 'mode': 'archive', 'produced_at': now_ms()}
     try:
         meta = await asyncio.to_thread(lambda: producer().send(TOPIC_EVENTS, key=ev.user_id, value=event).get(timeout=10))
     except Exception as e:  # noqa: BLE001
@@ -395,4 +412,62 @@ if os.path.isdir(STATIC_DIR):
 
 @app.get("/")
 async def index():
-    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+    return FileResponse(os.path.join(STATIC_DIR, "insights.html"))
+
+
+@app.get("/api/insights/{feature}")
+async def insight_api(feature: str, days: int = Query(30, ge=1, le=365), as_of: Optional[str] = None,
+                      countries: str = 'VN,TH', chart_date: Optional[str] = None,
+                      top_n: int = Query(50, ge=1, le=200), source: str = 'web',
+                      group_by: str = 'track', track: Optional[str] = None, genre: Optional[str] = None):
+    if feature not in ('lifecycle', 'playlists', 'countries', 'feedback') or source not in ('web', 'simulator', 'unknown') or group_by not in ('track', 'genre', 'province', 'hour'):
+        raise HTTPException(400, 'Bộ lọc không hợp lệ')
+    cs = list(dict.fromkeys(c.strip().upper() for c in countries.split(',') if c.strip()))
+    if not 2 <= len(cs) <= 10 or any(len(c) != 2 or not c.isalpha() for c in cs):
+        raise HTTPException(400, 'Chọn từ 2 đến 10 mã quốc gia ISO')
+    try:
+        for d in (as_of, chart_date):
+            if d:
+                from datetime import date
+                date.fromisoformat(d)
+    except ValueError:
+        raise HTTPException(400, 'Ngày phải theo YYYY-MM-DD')
+    mode = os.getenv('INSIGHT_BACKEND', 'archive')
+    if mode == 'elasticsearch':
+        records = []
+        scroll = None
+        try:
+            response = await es.post('/music-insight-raw/_search', params={'scroll': '1m'},
+                                     json={'size': 1000, 'sort': ['_doc'], 'query': {'match_all': {}}})
+            response.raise_for_status()
+            page = response.json()
+            while True:
+                scroll = page.get('_scroll_id')
+                hits = page['hits']['hits']
+                if not hits:
+                    break
+                records.extend(insights.normalize(json.loads(h['_source']['value'])) for h in hits)
+                if len(records) > 200000:
+                    raise HTTPException(422, 'Vượt giới hạn 200.000 bản ghi; cần batch view cho tập dữ liệu này.')
+                response = await es.post('/_search/scroll', json={'scroll': '1m', 'scroll_id': scroll})
+                response.raise_for_status()
+                page = response.json()
+        except httpx.HTTPError:
+            raise HTTPException(503, 'Chưa đọc được music-insight-raw; kiểm tra streaming/import dữ liệu.')
+        finally:
+            if scroll:
+                try:
+                    await es.request('DELETE', '/_search/scroll', json={'scroll_id': [scroll]})
+                except httpx.HTTPError:
+                    pass
+        metadata = {'mode': mode, 'note': 'Dữ liệu raw từ pipeline/import; không dùng archive thay thế khi ES lỗi.'}
+    else:
+        records, metadata = await asyncio.to_thread(insights.load_local)
+    try:
+        result = await asyncio.to_thread(insights.analyze, records, feature, days, as_of,
+                                        countries=cs, chart_date=chart_date, top_n=top_n, source=source,
+                                        group_by=group_by, track=track, genre=genre)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(422, f'Dữ liệu không đúng schema: {type(exc).__name__}')
+    result['data'] = metadata
+    return result

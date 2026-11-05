@@ -1,0 +1,33 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: crawl-countries
+  namespace: music
+spec:
+  schedule: "15 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1200
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: crawler
+              image: python:3.12-slim
+              command: ["sh", "-c", "pip install -q --no-cache-dir -r /app/requirements.txt && exec python /app/run_crawler.py --job countries"]
+              envFrom:
+                - configMapRef: { name: music-env }
+              env:
+                - { name: FAIL_ON_PARTIAL, value: "true" }
+              resources:
+                requests: { cpu: 100m, memory: 128Mi }
+                limits: { memory: 384Mi }
+              volumeMounts:
+                - { name: code, mountPath: /app }
+          volumes:
+            - name: code
+              configMap: { name: crawler-code }

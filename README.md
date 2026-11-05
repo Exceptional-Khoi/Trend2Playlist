@@ -1,5 +1,18 @@
 # VN Music Pulse
 
+## Dashboard hiện tại
+
+Dự án chỉ còn **một dashboard**, gồm bốn tính năng theo tài liệu 07: vòng đời bài hát, playlist và thứ hạng, so sánh quốc gia, phản hồi play/skip/like. Dashboard demo và giao diện cũ đã được xóa.
+
+Chạy với dữ liệu lưu trữ trên PowerShell:
+
+```powershell
+$env:INSIGHT_BACKEND = 'archive'
+.\.venv\Scripts\python.exe -X utf8 -m uvicorn api:app --app-dir serving --host 127.0.0.1 --port 8000
+```
+
+Mở http://127.0.0.1:8000. Cách cài thư viện, nguồn dữ liệu, chế độ pipeline và giới hạn kiểm chứng nằm trong [hướng dẫn bốn tính năng](docs/09-four-features-implementation.md). Những mô tả dashboard theo tỉnh/gợi ý bên dưới là bối cảnh kiến trúc trước đây; không phải danh sách màn hình hiện tại.
+
 **Hệ thống lưu trữ và xử lý dữ liệu lớn: xu hướng âm nhạc theo 34 tỉnh/thành Việt Nam và gợi ý playlist thời gian thực**
 
 Project môn *Big Data Storage and Processing*, **Direction 1** (xây dựng và cài đặt kiến trúc dữ liệu lớn).

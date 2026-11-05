@@ -79,12 +79,14 @@ def crawl_playlists(session, crawled_ms):
             continue
         for pos, t in enumerate(tracks, start=1):
             tr = _track(t)
-            yield TOPIC_PLAYLISTS, tr["track_key"], playlist_item(f"spotify:{pid}", name or label, None, crawled_ms, pos, tr)
+            rec = playlist_item(f"spotify:{pid}", name or label, None, crawled_ms, pos, tr)
+            rec['playlist_type'] = 'editorial' if pid in {x[0] for x in EDITORIAL_PLAYLISTS} else 'unknown'
+            yield TOPIC_PLAYLISTS, tr["track_key"], rec
         log.info("spotify playlist %s: %d tracks", name or label, len(tracks))
 
 
 # ------------------------------------------------------------------ kworb (streams)
-_ROW = re.compile(r"<tr>(.*?)</tr>", re.S)
+_ROW = re.compile(r"<tr[^>]*>(.*?)</tr>", re.S)
 _TD = re.compile(r"<td[^>]*>(.*?)</td>", re.S)
 _ARTIST = re.compile(r'href="\.\./artist/[^"]+">([^<]+)</a>')
 _TRACK = re.compile(r'href="\.\./track/([A-Za-z0-9]+)\.html">([^<]+)</a>')
@@ -119,7 +121,30 @@ def crawl_kworb_daily(session, crawled_ms, country=os.getenv("KWORB_COUNTRY", "v
     for x in rows:
         tr = track_fields(x["title"], x["artists"], "spotify", platform_id=x["track_id"],
                           url=f"https://open.spotify.com/track/{x['track_id']}")
-        yield TOPIC_CHARTS, tr["track_key"], chart_entry(
-            f"spotify_daily_streams_{country}", crawled_ms, x["rank"], len(rows), tr, previous_rank=x["prev"],
-            metric_name="streams", metric_value=x["streams"], total_plays=x["total"])
+        rec = chart_entry(
+            f"spotify_daily_streams_{country}", crawled_ms, x["rank"], max(y['rank'] for y in rows), tr, previous_rank=x["prev"],
+            metric_name="streams", metric_value=x["streams"], total_plays=x["total"], scope=country.upper())
+        heading = ' '.join(re.findall(r'<span class="pagetitle">(.*?)</span>', r.text, re.S))
+        date = re.search(r'\b(20\d{2}/\d{2}/\d{2})\b', heading)
+        rec.update(data_provider='spotify_kworb', country_code=country.upper(), period_type='daily',
+                   source_period=date.group(1).replace('/', '-') if date else None,
+                   source_url=f'https://kworb.net/spotify/country/{country}_daily.html')
+        yield TOPIC_CHARTS, tr["track_key"], rec
     log.info("kworb spotify daily %s: %d rows", country, len(rows))
+
+
+def crawl_countries(session, crawled_ms):
+    failed = []
+    for country in os.getenv('COUNTRY_MARKETS', 'vn,th,id,us,jp').split(','):
+        country = country.strip().lower()
+        if not re.fullmatch('[a-z]{2}', country):
+            raise ValueError('Invalid country ISO')
+        count = 0
+        for _, _, rec in crawl_kworb_daily(session, crawled_ms, country):
+            count += 1
+            # Separate topic: foreign charts must not enter the VN national score.
+            yield 'music.country-charts', rec['platform_id'], rec
+        if not count:
+            failed.append(country)
+    if failed:
+        raise RuntimeError('Country charts unavailable: ' + ','.join(failed))

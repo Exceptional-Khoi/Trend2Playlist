@@ -31,6 +31,7 @@ spec:
           command: ["sh", "-c", "pip install -q --no-cache-dir -r /app/requirements.txt && exec uvicorn api:app --host 0.0.0.0 --port 8000 --proxy-headers"]
           envFrom: [{ configMapRef: { name: music-env } }]
           env:
+            - { name: INSIGHT_BACKEND, value: elasticsearch }
             - { name: STATIC_DIR, value: /static }
             - { name: MERGE_WEIGHTS, value: "0.6,0.3,0.1" }
           ports:

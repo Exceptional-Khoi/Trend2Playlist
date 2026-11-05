@@ -74,6 +74,18 @@ def canonical(df):
 
 started = []
 
+# Full raw records retain source periods and playlist classification, independent of
+# the legacy VN-only parsed schemas. Topic/partition/offset makes replay idempotent.
+if "ingest" in QUERIES:
+    insight_raw = (kafka_stream([TOPICS['charts'], TOPICS['playlists'], TOPICS['events'], 'music.country-charts'])
+                   .select(F.concat_ws(':', 'topic', F.col('partition').cast('string'),
+                                       F.col('offset').cast('string')).alias('doc_id'),
+                           F.col('value').cast('string').alias('value')))
+    started.append(insight_raw.writeStream.outputMode('append').queryName('insight_raw')
+                   .foreachBatch(lambda df, _: es_write(df, 'music-insight-raw', 'doc_id'))
+                   .option('checkpointLocation', CKPT + '/insight-raw')
+                   .trigger(processingTime='30 seconds').start())
+
 # ---------------------------------------------------------------- 1) ingest -> HDFS
 if "ingest" in QUERIES:
     raw = (kafka_stream(list(TOPICS.values()), 50000)

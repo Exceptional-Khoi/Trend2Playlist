@@ -27,6 +27,7 @@ TEMPLATE = {
                                         "mapping": {"type": "keyword", "ignore_above": 2048}}},
             ],
             "properties": {
+                "value": {"type": "text", "index": False},
                 **{f: {"type": "date", "format": "epoch_millis||strict_date_optional_time"} for f in DATE_FIELDS},
                 "text": {"type": "text"},
                 "search_text": {"type": "keyword"},
