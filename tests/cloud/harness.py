@@ -98,7 +98,8 @@ class Harness:
                     'app':p['metadata'].get('labels',{}).get('app'),
                     'ready':all(c.get('ready') for c in p['status'].get('containerStatuses',[])),
                     'restarts':sum(c.get('restartCount',0) for c in p['status'].get('containerStatuses',[]))}
-                    for p in pods if p['status'].get('phase')=='Running']}
+                    for p in pods if p['status'].get('phase')=='Running'
+                    and not any(o.get('kind')=='Job' for o in p['metadata'].get('ownerReferences',[]))]}
 
     def _headroom(self):
         pods=self.request('GET','/api/v1/pods')['items']
