@@ -59,6 +59,14 @@ def hdfs(path,op='LISTSTATUS'):
             target=url+('&excludedatanodes='+urllib.parse.quote(','.join(excluded),safe='') if excluded else '')
             response=requests.get(target,allow_redirects=False,timeout=(3,10))
             if response.status_code>=400:
+                try:remote=json.loads(response.content).get('RemoteException',{})
+                except (ValueError,AttributeError):remote={}
+                if (excluded and response.status_code==403 and remote.get('exception')=='IOException'
+                        and remote.get('message')=='No active nodes contain this block'):
+                    # This is per-request replica selection exhaustion, not an
+                    # authorization denial. Reprobe within the caller deadline.
+                    with HDFS_LOCK:BAD_DATANODES.clear()
+                    raise TimeoutError('Temporary WebHDFS replica exclusions exhausted; reset for bounded reprobe')
                 if excluded and response.status_code>=500 and attempt<2:
                     with HDFS_LOCK:BAD_DATANODES.clear()
                     continue

@@ -384,3 +384,29 @@ def test_hdfs_eventual_poll_retries_transport_but_propagates_committed_corruptio
     else:
         with pytest.raises(RuntimeError,match='Committed Parquet'):h.await_records([ack])
         assert len(reads)==1 and not traces
+
+
+@pytest.mark.parametrize('selection_exhausted',[True,False])
+def test_webhdfs_selection_403_is_transient_but_authorization_403_remains_failure(source_root,monkeypatch,selection_exhausted):
+    import io
+    import requests
+    import threading
+    import time
+    import urllib.error
+    import urllib.parse
+    bad={'10.0.0.10:9866':time.monotonic()+20}
+    remote={'exception':'IOException','message':'No active nodes contain this block'} if selection_exhausted else {
+        'exception':'AccessControlException','message':'Permission denied'}
+    monkeypatch.setattr(urllib.request,'urlopen',lambda *a,**kw:io.BytesIO(
+        b'{"FileStatus":{"modificationTime":1,"length":10}}'))
+    monkeypatch.setattr(requests,'get',lambda *a,**kw:SimpleNamespace(status_code=403,
+        content=json.dumps({'RemoteException':remote}).encode()))
+    fn=isolated_function(source_root/'tests/cloud/agent.py','hdfs',{'BASE':'/qa/run','NS':'qa',
+        'HDFS_CACHE':{},'HDFS_CACHE_BYTES':0,'BAD_DATANODES':bad,'HDFS_LOCK':threading.Lock(),
+        'time':time,'io':io,'json':json,'urllib':SimpleNamespace(request=urllib.request,error=urllib.error,parse=urllib.parse)})
+    if selection_exhausted:
+        with pytest.raises(TimeoutError,match='exclusions exhausted'):fn('/qa/run/checkpoints/id','OPEN')
+        assert not bad
+    else:
+        with pytest.raises(urllib.error.HTTPError) as error:fn('/qa/run/checkpoints/id','OPEN')
+        assert error.value.code==403 and bad
