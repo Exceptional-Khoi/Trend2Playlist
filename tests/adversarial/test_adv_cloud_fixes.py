@@ -98,6 +98,17 @@ def test_native_state_memory_is_bounded_and_invalid_budget_rejects(source_root,m
         assert values['spark.sql.streaming.stateStore.rocksdb.maxMemoryUsageMB']==budget
 
 
+def test_full_profile_isolates_executor_processes_without_starving_batch(source_root):
+    import re
+    text=(source_root/'scripts/deploy.sh').read_text(encoding='utf-8')
+    config=json.loads(re.search(r"k patch configmap music-env .*?-p '([^']+)'",text).group(1))['data']
+    cores=int(re.search(r'k set env deployment/spark-worker .*WORKER_CORES=(\d+)',text).group(1))
+    replicas=int(re.search(r'k scale deployment/spark-worker --replicas=(\d+)',text).group(1))
+    assert cores==1, 'A three-GiB worker must not co-locate two Python-capable executors after the observed OOM'
+    speed,batch=int(config['SPEED_CORES_MAX']),int(config['BATCH_CORES_MAX'])
+    assert speed>0 and batch>0 and speed+batch<=cores*replicas, 'Long-lived speed executors must leave a batch slot'
+
+
 @pytest.mark.parametrize('operation',['hdfs_records','publish','listen_parallel','crawl_apple'])
 def test_observer_retries_reads_but_never_replays_writes(source_root,tmp_path,monkeypatch,operation):
     import io

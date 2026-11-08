@@ -4,7 +4,7 @@ This change addresses observed worker OOM and batch checkpoint loss, and the adv
 
 ## Memory and concurrency
 
-The full deployment profile keeps three workers but uses two slots and 1GiB of schedulable executor heap per worker, with 512MiB executors. Speed and batch each request at most three slots. Each worker requests 2GiB physical memory with a 3GiB limit. This reserves space for worker JVM, Python workers and native state beyond executor heap; it is a resource budget, not a measured guarantee that all workloads fit.
+The full deployment profile keeps three workers but uses one slot and 1GiB of advertised executor heap per worker, with 512MiB executors. Speed requests at most two slots and batch one, fitting the three available slots while preventing two Python-capable executors from sharing a worker container. Each worker requests 2GiB physical memory with a 3GiB limit. An earlier two-slot budget passed several batches but still produced a worker OOM after hours of operation; it is not treated as a resolved memory guarantee. The one-slot policy trades throughput for physical/native memory headroom and must be validated against real batch duration and streaming lag.
 
 RocksDB memory management is enabled with a configurable `ROCKSDB_MEMORY_MB` (default64). Nonpositive values fail startup explicitly. No cluster/nodepool scaling or new persistent disk is required. Validate real CPU/native/Python memory after rollout before increasing traffic. [Spark's memory management documentation](https://spark.apache.org/docs/3.5.7/structured-streaming-programming-guide.html#rocksdb-state-store-memory-management) describes why native state needs a separate bound.
 
