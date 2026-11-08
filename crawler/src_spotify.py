@@ -118,6 +118,10 @@ def crawl_kworb_daily(session, crawled_ms, country=os.getenv("KWORB_COUNTRY", "v
         rows.append(dict(rank=rank, prev=prev, track_id=m.group(1), title=html.unescape(m.group(2)),
                          artists=[html.unescape(a) for a in _ARTIST.findall(row)], streams=_int(tds[6]),
                          total=_int(tds[10]) if len(tds) > 10 else None))
+    if rows and (any(type(x['rank']) is not int or x['rank'] < 1 for x in rows)
+                 or len({x['track_id'] for x in rows}) != len(rows)
+                 or len({x['rank'] for x in rows}) != len(rows)):
+        raise ValueError('Kworb chart contains invalid ranks or duplicate identities')
     for x in rows:
         tr = track_fields(x["title"], x["artists"], "spotify", platform_id=x["track_id"],
                           url=f"https://open.spotify.com/track/{x['track_id']}")

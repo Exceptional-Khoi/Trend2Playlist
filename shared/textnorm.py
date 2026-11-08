@@ -7,6 +7,7 @@
 Chỉ dùng thư viện chuẩn để chạy được trong Spark executor mà không cần cài thêm.
 """
 import re
+import hashlib
 import unicodedata
 
 try:  # chạy trong package (tests) hoặc file phẳng (ConfigMap trong k8s)
@@ -137,7 +138,15 @@ def track_key(title, artists):
     """Khoá bài hát: '<tên bài>__<nghệ sĩ chính>' dạng slug, ví dụ 'tim-em__hngle'."""
     arts = split_artists(artists)
     primary = arts[0] if arts else "unknown"
-    return f"{slug(clean_title(title)) or 'unknown'}__{slug(primary) or 'unknown'}"
+    def identity_slug(value):
+        normalized = unicodedata.normalize('NFC', strip_accents(value)).casefold()
+        base = slug(value)
+        if any(ord(c) > 127 and c.isalnum() for c in normalized):
+            # Keep existing Latin keys stable; preserve non-Latin identity with a hash.
+            digest = hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:16]
+            return (base or 'unicode') + '-' + digest
+        return base or 'unknown'
+    return f"{identity_slug(clean_title(title))}__{identity_slug(primary)}"
 
 
 def parse_count(s):

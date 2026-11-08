@@ -232,6 +232,7 @@ def crawl_charts(session, crawled_ms):
 def _api_comments(session, key, video_id, max_n, since_ms):
     params = dict(part="snippet", videoId=video_id, maxResults=100, order="time", textFormat="plainText", key=key)
     got = 0
+    seen_ids, seen_pages = set(), set()
     while got < max_n:
         r = session.get("https://www.googleapis.com/youtube/v3/commentThreads", params=params, timeout=25)
         if r.status_code in (403, 404):  # tắt bình luận / hết quota
@@ -240,6 +241,9 @@ def _api_comments(session, key, video_id, max_n, since_ms):
         r.raise_for_status()
         data = r.json()
         for it in data.get("items", []):
+            if not it.get('id') or it['id'] in seen_ids:
+                continue
+            seen_ids.add(it['id'])
             sn = it["snippet"]["topLevelComment"]["snippet"]
             pub = int(datetime.fromisoformat(sn["publishedAt"].replace("Z", "+00:00")).timestamp() * 1000)
             if since_ms and pub < since_ms:
@@ -250,8 +254,9 @@ def _api_comments(session, key, video_id, max_n, since_ms):
             got += 1
             if got >= max_n:
                 return
-        if not data.get("nextPageToken"):
+        if not data.get("nextPageToken") or data['nextPageToken'] in seen_pages:
             return
+        seen_pages.add(data['nextPageToken'])
         params["pageToken"] = data["nextPageToken"]
 
 

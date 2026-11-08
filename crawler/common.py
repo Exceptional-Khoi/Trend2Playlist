@@ -6,6 +6,7 @@ Không ghi file trung gian ra đĩa; sink "stdout"/"jsonl" chỉ để debug tr�
 import json
 import logging
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -74,7 +75,7 @@ class KafkaSink:
             compression_type="gzip",
             max_in_flight_requests_per_connection=1,
             key_serializer=lambda k: k.encode("utf-8") if k is not None else None,
-            value_serializer=lambda v: json.dumps(v, ensure_ascii=False).encode("utf-8"),
+            value_serializer=lambda v: json.dumps(v, ensure_ascii=False, allow_nan=False).encode("utf-8"),
         )
         self.count = 0
         self.errors = 0
@@ -121,10 +122,13 @@ class JsonlSink:
         self.errors = 0
 
     def send(self, topic, key, value):
+        if not isinstance(topic, str) or topic in ('.', '..') or not re.fullmatch(r'[A-Za-z0-9._-]{1,249}', topic):
+            raise ValueError('Invalid topic filename')
+        line = json.dumps({"topic": topic, "key": key, "value": value}, ensure_ascii=False, allow_nan=False) + '\n'
         f = self.files.get(topic)
         if f is None:
             f = self.files[topic] = open(os.path.join(self.dir, topic + ".jsonl"), "a", encoding="utf-8")
-        f.write(json.dumps({"topic": topic, "key": key, "value": value}, ensure_ascii=False) + "\n")
+        f.write(line)
         self.count += 1
 
     def close(self):
@@ -155,6 +159,8 @@ def track_fields(title, artists, source, platform_id=None, url=None, thumbnail=N
     """Các trường mô tả bài hát, dùng chung cho mọi topic."""
     tn = _textnorm()
     arts = tn.split_artists(artists)
+    if not isinstance(title, str) or not title.strip() or not arts:
+        raise ValueError('Track requires a nonblank title and artist')
     return {
         "track_key": tn.track_key(title, arts),
         "title": tn.clean_title(title),

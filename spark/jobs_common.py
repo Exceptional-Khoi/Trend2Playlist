@@ -178,8 +178,11 @@ def read_view(spark, name):
     try:
         rid = spark.read.json(f"{VIEWS}/_latest/{name}").first()["run_id"]
         return spark.read.parquet(f"{VIEWS}/{name}/run_id={rid}")
-    except Exception:  # noqa: BLE001 - chưa có batch view
-        return None
+    except Exception as exc:
+        code = getattr(exc, 'getErrorClass', lambda: None)()
+        if isinstance(exc, FileNotFoundError) or code in ('PATH_NOT_FOUND', 'TABLE_OR_VIEW_NOT_FOUND'):
+            return None
+        raise
 
 
 def path_size_bytes(spark, path):
@@ -217,21 +220,49 @@ def _es_request(method, path, body=None):
 
 
 def es_replace(df, index, id_col, run_id):
-    """Ghi view mới rồi xoá document của các lần chạy cũ (view nhỏ, ghi đè toàn bộ)."""
+    """Delete only generations observed BEFORE this write, never an unseen newer run.
+
+    This is not an atomic view swap: readers may still observe an in-progress batch.
+    A stale cleanup cannot delete a concurrently published generation, including a
+    document overwritten between the delete query snapshot and its execution.
+    """
+    from urllib.error import HTTPError
+    previous = []
+    if ES_NODES:
+        try:
+            response = _es_request('POST', f'/{index}/_search', {
+                'size': 0, 'aggs': {'runs': {'terms': {'field': 'run_id', 'size': 10000}}}})
+            runs = response['aggregations']['runs']
+            if runs.get('sum_other_doc_count', 0):
+                raise ValueError('Too many generations for safe replacement cleanup')
+            previous = [b['key'] for b in runs['buckets'] if b['key'] != run_id]
+        except HTTPError as exc:
+            if exc.code != 404:
+                raise
     es_write(df, index, id_col)
     if ES_NODES:
         _es_request("POST", f"/{index}/_refresh")
-        _es_request("POST", f"/{index}/_delete_by_query?conflicts=proceed&refresh=true",
-                    {"query": {"bool": {"must_not": {"term": {"run_id": run_id}}}}})
+        if previous:
+            _es_request("POST", f"/{index}/_delete_by_query?conflicts=proceed&refresh=true",
+                        {'query': {'terms': {'run_id': previous}}})
 
 
 def es_put(index, doc_id, doc):
+    from pathlib import Path
+    from urllib.parse import quote
     if not ES_NODES:
-        os.makedirs(f"{LOCAL_ES_OUT}/{index}", exist_ok=True)
-        with open(f"{LOCAL_ES_OUT}/{index}/{doc_id}.json", "w", encoding="utf-8") as f:
-            json.dump(doc, f, ensure_ascii=False)
+        if not isinstance(index, str) or not index or index in ('.', '..') or any(c in index for c in '/\\\x00'):
+            raise ValueError('Invalid index directory')
+        directory = Path(LOCAL_ES_OUT).resolve() / index
+        if directory.resolve().parent != Path(LOCAL_ES_OUT).resolve():
+            raise ValueError('Index directory escapes local output')
+        if not isinstance(doc_id, str) or not doc_id or any(c in doc_id for c in '/\\\x00'):
+            raise ValueError('Invalid local document ID')
+        directory.mkdir(parents=True, exist_ok=True)
+        with (directory / (quote(doc_id, safe='') + '.json')).open('w', encoding='utf-8') as f:
+            json.dump(doc, f, ensure_ascii=False, allow_nan=False)
         return
-    _es_request("PUT", f"/{index}/_doc/{doc_id}?refresh=true", doc)
+    _es_request("PUT", f"/{index}/_doc/{quote(doc_id, safe='')}?refresh=true", doc)
 
 
 def now_ms():

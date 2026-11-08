@@ -1,0 +1,8 @@
+# Install the selected source revision's requirements-dev.txt first.
+hypothesis==6.170.15
+pytest-cov==7.1.0
+psutil==7.2.2
+kubernetes-validate==1.37.0
+python-dotenv==1.2.4
+# Optional real browser DOM test:
+playwright>=1.50,<2

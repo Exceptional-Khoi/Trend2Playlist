@@ -2,6 +2,7 @@ from __future__ import annotations
 import json, re, hashlib, unicodedata
 from pathlib import Path
 from collections import defaultdict
+from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "output"
@@ -9,15 +10,18 @@ OUT = ROOT / "output"
 def remove_accents(input_str: str) -> str:
     if not input_str:
         return ""
-    nfkd_form = unicodedata.normalize('NFKD', input_str)
+    nfkd_form = unicodedata.normalize('NFKD', input_str.replace('Đ', 'D').replace('đ', 'd'))
     return "".join([c for c in nfkd_form if not unicodedata.combining(c)])
 
 def clean_text(text: str) -> str:
     if not text:
         return ""
     # remove video markers like [MV], (Official Music Video), OST, etc.
-    t = re.sub(r"\[.*?\]|\(.*?\)", " ", text)
-    t = re.sub(r"(official|music|video|audio|mv|ost|visualizer|lyric video|vie channel|anh trai say hi)", " ", t, flags=re.IGNORECASE)
+    def bracket(match):
+        content = match.group(0)[1:-1]
+        return ' ' if re.search(r'\b(official|mv|music video|lyrics?|audio|visualizer)\b', content, re.I) else ' '+content+' '
+    t = re.sub(r"\[.*?\]|\(.*?\)", bracket, text)
+    t = re.sub(r"\b(official|music video|audio|mv|ost|visualizer|lyric video|vie channel|anh trai say hi)\b", " ", t, flags=re.IGNORECASE)
     t = re.sub(r"[^\w\s]", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
     return remove_accents(t).lower()
@@ -26,7 +30,7 @@ def extract_primary_artist(artist_str: str) -> str:
     if not artist_str:
         return ""
     # Split by separators: feat., ft., x, ,, &, -
-    parts = re.split(r",|x|&|\bfeat\b|\bft\b|-", artist_str, flags=re.IGNORECASE)
+    parts = re.split(r",|\bx\b|&|\bfeat\b|\bft\b|\s+-\s+", artist_str, flags=re.IGNORECASE)
     primary = parts[0].strip() if parts else artist_str
     return clean_text(primary)
 
@@ -89,7 +93,7 @@ def resolve_entities():
             try:
                 rec = json.loads(line)
                 # Ignore YouTube comments for track resolution
-                if rec.get("event_type") == "comment":
+                if rec.get("event_type") == "comment" or rec.get('synthetic') or rec.get('provenance') == 'synthetic':
                     continue
                 raw_items.append((platform, rec))
             except Exception:
@@ -104,6 +108,19 @@ def resolve_entities():
         "platform_ranks": {},
     })
 
+    # Deterministic representative per platform: newest timestamp, then best rank,
+    # then lexical record order. Sorting makes last-wins independent of file order.
+    def selection(item):
+        platform, rec = item
+        rank = rec.get('metrics', {}).get('rank')
+        rank = rank if type(rank) is int and rank > 0 else 10**9
+        try:
+            parsed = datetime.fromisoformat(str(rec.get('event_time') or '').replace('Z', '+00:00'))
+            observed = (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp()
+        except (ValueError, OverflowError, OSError):
+            observed = float('-inf')
+        return (platform, observed, -rank, json.dumps(rec, sort_keys=True, ensure_ascii=False))
+    raw_items.sort(key=selection)
     # Group by key
     for platform, rec in raw_items:
         title = rec.get("track_title") or ""
@@ -140,30 +157,30 @@ def resolve_entities():
 
     # Build canonical records
     canonical_records = []
-    for key, c in clusters.items():
+    for key, c in sorted(clusters.items()):
         if not c["titles"]:
             continue
         
         # Determine best display title & artist
         # Prefer titles from Spotify or Apple over YouTube MV titles
-        best_title = sorted(list(c["titles"]), key=lambda x: len(x))[0]
-        artists_list = sorted(list(c["artists"]), key=lambda x: len(x))
+        best_title = sorted(c["titles"], key=lambda x: (len(x), x))[0]
+        artists_list = sorted(c["artists"], key=lambda x: (len(x), x))
         primary_artist = artists_list[0] if artists_list else "Unknown"
 
         # Stable canonical ID
         hash_digest = hashlib.sha256(f"{clean_text(best_title)}::{clean_text(primary_artist)}".encode("utf-8")).hexdigest()[:12]
         cid = f"trk_{hash_digest}"
 
-        isrc = next(iter(c["isrcs"])) if c["isrcs"] else None
+        isrc = min(c['isrcs']) if c['isrcs'] else None
         
         canonical_record = {
             "canonical_track_id": cid,
             "title": best_title,
-            "artists": list(c["artists"]),
+            "artists": sorted(c["artists"]),
             "isrc": isrc,
             "ids": c["ids"],
-            "genres": list(c["genres"]),
-            "aliases": [t for t in c["titles"] if t != best_title],
+            "genres": sorted(c["genres"]),
+            "aliases": sorted(t for t in c["titles"] if t != best_title),
             "cross_platform_ranks": c["platform_ranks"],
             "platforms_present": [p for p, v in c["ids"].items() if v is not None],
         }

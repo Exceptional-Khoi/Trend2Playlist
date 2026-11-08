@@ -160,7 +160,9 @@ TREND_WEIGHT = float(os.getenv("RECO_TREND_WEIGHT", "0.35"))
 def recommend_batch(df, batch_id):
     df = df.persist()  # micro-batch được dùng nhiều lần -> tránh chạy lại phép gộp có trạng thái
     try:
-        if not df.isEmpty():
+        # A full action commits every state-store partition, even if _recommend
+        # returns early for missing catalog/history. isEmpty() only takes rows.
+        if df.count() > 0:
             _recommend(df, batch_id)
     finally:
         df.unpersist()

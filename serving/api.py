@@ -9,11 +9,13 @@ Chạy cục bộ:  uvicorn api:app --port 8000   (cần ES_URL, KAFKA_BOOTSTRAP
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
+from urllib.parse import quote
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
@@ -26,6 +28,20 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "shared"))
 from provinces import PROVINCE_BY_CODE, PROVINCES  # noqa: E402
 from textnorm import norm_text  # noqa: E402
+
+# ISO 3166-1 alpha-2, including territories. Do not accept arbitrary Unicode pairs.
+COUNTRY_CODES = frozenset('''AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ
+BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ
+CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ
+DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR
+GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY
+HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP
+KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY
+MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ
+NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY
+QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ
+TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ
+VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW'''.split())
 
 ES_URL = os.getenv("ES_URL", "http://localhost:9200")
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
@@ -63,7 +79,7 @@ async def search(index, body):
 
 
 async def get_doc(index, doc_id):
-    r = await es.get(f"/{index}/_doc/{doc_id}")
+    r = await es.get(f"/{index}/_doc/{quote(doc_id, safe='')}")
     if r.status_code == 404:
         return None
     r.raise_for_status()
@@ -88,13 +104,20 @@ def now_ms():
     return int(time.time() * 1000)
 
 
+def insight_backend():
+    mode = os.getenv('INSIGHT_BACKEND', 'archive')
+    if mode not in ('archive', 'elasticsearch'):
+        raise HTTPException(503, 'INSIGHT_BACKEND phải là archive hoặc elasticsearch')
+    return mode
+
+
 def producer():
     global _producer
     if _producer is None:
         from kafka import KafkaProducer
         _producer = KafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP.split(","), acks="all", retries=5, linger_ms=5,
                                   key_serializer=lambda k: k.encode(),
-                                  value_serializer=lambda v: json.dumps(v, ensure_ascii=False).encode())
+                                  value_serializer=lambda v: json.dumps(v, ensure_ascii=False, allow_nan=False).encode())
     return _producer
 
 
@@ -102,12 +125,23 @@ def producer():
 @app.get("/api/health")
 async def health():
     out = {"time": now_ms()}
+    mode = insight_backend()
+    if mode == 'archive':
+        return dict(out, backend=mode)
     try:
         r = await es.get("/_cluster/health")
+        r.raise_for_status()
         out["elasticsearch"] = r.json().get("status")
+        if out['elasticsearch'] not in ('green', 'yellow'):
+            raise ValueError('Elasticsearch not ready')
     except Exception as e:  # noqa: BLE001
-        out["elasticsearch"] = f"down: {e}"
+        raise HTTPException(503, 'Elasticsearch chưa sẵn sàng') from e
     return out
+
+
+@app.get('/api/live')
+async def live():
+    return {'alive': True}
 
 
 @app.get("/api/meta")
@@ -142,7 +176,7 @@ async def realtime_by_province(minutes):
 
 
 @app.get("/api/provinces")
-async def provinces(minutes: int = 15):
+async def provinces(minutes: int = Query(15, ge=1, le=1440)):
     async def load():
         summary, rt = await asyncio.gather(search("music-an-province-summary", {"size": 100}),
                                            realtime_by_province(minutes))
@@ -167,7 +201,7 @@ async def provinces(minutes: int = 15):
 
 
 @app.get("/api/trending")
-async def trending(province: str, limit: int = Query(20, le=50), mode: str = "merged", rt_minutes: int = 60):
+async def trending(province: str, limit: int = Query(20, ge=1, le=50), mode: str = "merged", rt_minutes: int = Query(60, ge=1, le=1440)):
     if province not in PROVINCE_BY_CODE:
         raise HTTPException(404, "unknown province")
 
@@ -241,7 +275,7 @@ async def trending(province: str, limit: int = Query(20, le=50), mode: str = "me
 
 
 @app.get("/api/mentions")
-async def mentions(province: str, limit: int = Query(12, le=50)):
+async def mentions(province: str, limit: int = Query(12, ge=1, le=50)):
     res = await search("music-rt-mentions", {"size": limit, "query": {"term": {"province_code": province}},
                                              "sort": [{"published_ms": "desc"}],
                                              "_source": ["title", "artists", "text", "like_count", "published_ms", "video_id",
@@ -251,7 +285,7 @@ async def mentions(province: str, limit: int = Query(12, le=50)):
 
 # ------------------------------------------------------------------ BXH toàn quốc / nền tảng
 @app.get("/api/national")
-async def national(limit: int = Query(50, le=200)):
+async def national(limit: int = Query(50, ge=1, le=200)):
     async def load():
         res = await search("music-tracks", {"size": limit, "sort": [{"national_score": "desc"}],
                                             "query": {"range": {"national_score": {"gt": 0}}}})
@@ -270,7 +304,7 @@ async def charts():
 
 
 @app.get("/api/charts/{chart_id}")
-async def chart(chart_id: str, limit: int = Query(50, le=200)):
+async def chart(chart_id: str, limit: int = Query(50, ge=1, le=200)):
     res = await search("music-rt-charts", {"size": limit, "sort": [{"rank": "asc"}], "query": {"bool": {"filter": [
         {"term": {"chart_id": chart_id}}, {"term": {"chart_scope": "VN"}}]}}})
     return {"chart_id": chart_id, "items": sources(res)}
@@ -283,7 +317,7 @@ ANALYTICS = {"genre-province", "hourly", "platform-overlap", "artists", "rising"
 
 @app.get("/api/analytics/{name}")
 async def analytics(name: str, province: Optional[str] = None, scope: Optional[str] = None,
-                    chart_id: Optional[str] = None, size: int = Query(2000, le=5000)):
+                    chart_id: Optional[str] = None, size: int = Query(2000, ge=1, le=5000)):
     if name not in ANALYTICS:
         raise HTTPException(404, f"available: {sorted(ANALYTICS)}")
     filters = [{"term": {k: v}} for k, v in (("province_code", province), ("scope", scope), ("chart_id", chart_id)) if v]
@@ -295,7 +329,7 @@ async def analytics(name: str, province: Optional[str] = None, scope: Optional[s
 
 
 @app.get("/api/realtime/timeline")
-async def timeline(minutes: int = Query(60, le=1440)):
+async def timeline(minutes: int = Query(60, ge=1, le=1440)):
     async def load():
         res = await search("music-rt-plays", {"size": 0, "query": {"range": {"minute": {"gte": now_ms() - minutes * 60_000}}},
                                               "aggs": {"m": {"date_histogram": {"field": "minute", "fixed_interval": "1m"},
@@ -309,7 +343,7 @@ async def timeline(minutes: int = Query(60, le=1440)):
 
 
 @app.get("/api/realtime/streaming")
-async def streaming(minutes: int = Query(30, le=720)):
+async def streaming(minutes: int = Query(30, ge=1, le=720)):
     """Throughput các streaming query của Spark (speed layer tự ghi mỗi 30 giây)."""
     latest, hist = await asyncio.gather(
         search("music-metrics", {"size": 20}),
@@ -336,7 +370,7 @@ async def recommend(user_id: str, province: Optional[str] = None):
 
 
 @app.get("/api/users")
-async def users(province: Optional[str] = None, limit: int = Query(30, le=200)):
+async def users(province: Optional[str] = None, limit: int = Query(30, ge=1, le=200)):
     q = {"term": {"province_code": province}} if province else {"match_all": {}}
     res = await search("music-recommendations", {"size": limit, "query": q, "sort": [{"updated_at": "desc"}],
                                                  "_source": ["user_id", "province_code", "updated_at", "events_30m"]})
@@ -354,31 +388,40 @@ class Listen(BaseModel):
 async def listen(ev: Listen):
     if ev.province_code not in PROVINCE_BY_CODE or ev.action not in ("play", "skip", "like"):
         raise HTTPException(400, "province_code/action không hợp lệ")
-    try:  # thông tin bài chỉ để hiển thị; ES tạm lỗi vẫn nhận sự kiện
-        track = await get_doc("music-tracks", ev.track_key) or {}
-    except Exception:  # noqa: BLE001
-        track = {}
+    if not ev.user_id.strip() or len(ev.user_id) > 100 or not ev.track_key.strip() or len(ev.track_key) > 1024:
+        raise HTTPException(400, 'Bài hát hoặc mã người dùng không hợp lệ')
+    mode = insight_backend()
+    if mode == 'archive':
+        try:
+            records, _ = await asyncio.to_thread(insights.load_local)
+        except OSError as exc:
+            raise HTTPException(503, 'Không đọc được dữ liệu archive') from exc
+        track = next((r for r in records if (r.get('track_key') or insights.identity(r)) == ev.track_key
+                      and r.get('record_type') == 'chart_entry'), None)
+    else:
+        try:
+            track = await get_doc('music-tracks', ev.track_key)
+        except (httpx.HTTPError, OSError) as exc:
+            raise HTTPException(503, 'Không tra cứu được bài hát') from exc
+    if not track:
+        raise HTTPException(404, 'Bài hát không tồn tại trong catalog')
+    if not isinstance(track, dict):
+        raise HTTPException(422, 'Metadata bài hát không đúng schema')
     ts = now_ms()
-    dur = int((track.get("duration_s") or 210) * 1000)
     event = {"event_id": str(uuid.uuid4()), "user_id": ev.user_id, "province_code": ev.province_code,
              "track_key": ev.track_key, "title": track.get("title", ev.track_key), "artists": track.get("artists", []),
-             "genre": track.get("genre", "Khác"), "duration_ms": dur, "source": "web", "action": ev.action,
-             "listen_ms": dur if ev.action == "play" else (8000 if ev.action == "skip" else 0), "ts_ms": ts}
-    if os.getenv('INSIGHT_BACKEND', 'archive') == 'archive':
+             "genre": track.get("genre_hint") or track.get("genre", "unknown"), "duration_ms": None, "source": "web", "action": ev.action,
+             "listen_ms": None, "ts_ms": ts}
+    try:
+        json.dumps(event, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(422, 'Metadata bài hát không đúng schema') from exc
+    if mode == 'archive':
         # Actual button clicks in local mode, explicitly separate from Kafka delivery.
-        records, _ = await asyncio.to_thread(insights.load_local)
-        known = next((r for r in records if (r.get('track_key') or insights.identity(r)) == ev.track_key
-                      and r.get('record_type') == 'chart_entry'), None)
-        if not known or not ev.user_id.strip() or len(ev.user_id) > 100:
-            raise HTTPException(400, 'Bài hát hoặc mã người dùng không hợp lệ')
-        event.update(title=known.get('title'), artists=known.get('artists'), genre=known.get('genre_hint') or 'unknown',
-                     listen_ms=None, duration_ms=None)
-        def append_event():
-            path = insights.ROOT / 'out/insight-web-events.jsonl'
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open('a', encoding='utf-8') as f:
-                f.write(json.dumps(event, ensure_ascii=False) + '\n')
-        await asyncio.to_thread(append_event)
+        try:
+            await asyncio.to_thread(insights.append_web_event, event)
+        except OSError as exc:
+            raise HTTPException(503, 'Không ghi được event archive') from exc
         return {'event': event, 'mode': 'archive', 'produced_at': now_ms()}
     try:
         meta = await asyncio.to_thread(lambda: producer().send(TOPIC_EVENTS, key=ev.user_id, value=event).get(timeout=10))
@@ -389,7 +432,7 @@ async def listen(ev: Listen):
 
 
 @app.get("/api/search")
-async def search_tracks(q: str, limit: int = Query(20, le=50)):
+async def search_tracks(q: str, limit: int = Query(20, ge=1, le=50)):
     nq = norm_text(q)
     if not nq:
         return {"items": []}
@@ -423,16 +466,18 @@ async def insight_api(feature: str, days: int = Query(30, ge=1, le=365), as_of: 
     if feature not in ('lifecycle', 'playlists', 'countries', 'feedback') or source not in ('web', 'simulator', 'unknown') or group_by not in ('track', 'genre', 'province', 'hour'):
         raise HTTPException(400, 'Bộ lọc không hợp lệ')
     cs = list(dict.fromkeys(c.strip().upper() for c in countries.split(',') if c.strip()))
-    if not 2 <= len(cs) <= 10 or any(len(c) != 2 or not c.isalpha() for c in cs):
+    if not 2 <= len(cs) <= 10 or any(c not in COUNTRY_CODES for c in cs):
         raise HTTPException(400, 'Chọn từ 2 đến 10 mã quốc gia ISO')
     try:
         for d in (as_of, chart_date):
             if d:
+                if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', d, flags=re.ASCII):
+                    raise ValueError('Expected YYYY-MM-DD')
                 from datetime import date
                 date.fromisoformat(d)
     except ValueError:
         raise HTTPException(400, 'Ngày phải theo YYYY-MM-DD')
-    mode = os.getenv('INSIGHT_BACKEND', 'archive')
+    mode = insight_backend()
     if mode == 'elasticsearch':
         records = []
         scroll = None
@@ -454,6 +499,8 @@ async def insight_api(feature: str, days: int = Query(30, ge=1, le=365), as_of: 
                 page = response.json()
         except httpx.HTTPError:
             raise HTTPException(503, 'Chưa đọc được music-insight-raw; kiểm tra streaming/import dữ liệu.')
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise HTTPException(422, 'Dữ liệu raw Elasticsearch không đúng schema') from exc
         finally:
             if scroll:
                 try:
@@ -462,12 +509,16 @@ async def insight_api(feature: str, days: int = Query(30, ge=1, le=365), as_of: 
                     pass
         metadata = {'mode': mode, 'note': 'Dữ liệu raw từ pipeline/import; không dùng archive thay thế khi ES lỗi.'}
     else:
-        records, metadata = await asyncio.to_thread(insights.load_local)
+        try:
+            records, metadata = await asyncio.to_thread(insights.load_local)
+        except OSError as exc:
+            raise HTTPException(503, 'Không đọc được dữ liệu archive') from exc
     try:
         result = await asyncio.to_thread(insights.analyze, records, feature, days, as_of,
                                         countries=cs, chart_date=chart_date, top_n=top_n, source=source,
                                         group_by=group_by, track=track, genre=genre)
-    except (ValueError, TypeError, KeyError) as exc:
+        json.dumps(result, allow_nan=False)
+    except (ValueError, TypeError, KeyError, OverflowError, OSError) as exc:
         raise HTTPException(422, f'Dữ liệu không đúng schema: {type(exc).__name__}')
     result['data'] = metadata
     return result

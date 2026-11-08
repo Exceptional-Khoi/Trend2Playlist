@@ -2,21 +2,40 @@
 from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
 from itertools import combinations
-from math import log2
+from math import log2, isfinite
 from statistics import median
 import json
 import os
+import re
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+_archive_lock = threading.Lock()
+
+
+def canonical(record):
+    return json.dumps(record, sort_keys=True, ensure_ascii=False, default=str)
 
 
 def timestamp(r):
-    value = r.get('ts_ms') or r.get('crawled_ms')
+    value = r.get('ts_ms')
+    if value is None:
+        value = r.get('crawled_ms')
     if value is not None:
-        return datetime.fromtimestamp(float(value) / 1000, timezone.utc)
+        try:
+            if isinstance(value, bool) or not isfinite(float(value)):
+                raise ValueError('Timestamp must be finite')
+            return datetime.fromtimestamp(float(value) / 1000, timezone.utc)
+        except (TypeError, OverflowError, OSError) as exc:
+            raise ValueError('Timestamp outside supported range') from exc
     value = r.get('crawled_at') or r.get('event_time')
-    return datetime.fromisoformat(value.replace('Z', '+00:00')).astimezone(timezone.utc) if value else None
+    if not value:
+        return None
+    if not isinstance(value, str):
+        raise ValueError('Timestamp must be an ISO string')
+    parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
 
 
 def identity(r):
@@ -26,10 +45,12 @@ def identity(r):
 
 def chart_group(r):
     return (r.get('data_provider') or r.get('source'), r.get('chart_id'),
-            r.get('country_code') or r.get('chart_scope'), r.get('period_type'))
+            r.get('country_code') or r.get('chart_scope'), r.get('period_type'), r.get('source'))
 
 
 def normalize(raw):
+    if not isinstance(raw, dict):
+        raise ValueError('Record must be a JSON object')
     r = dict(raw['value'] if isinstance(raw.get('value'), dict) else raw)
     if 'record_type' not in r:
         if r.get('action'):
@@ -70,6 +91,35 @@ def load_local():
                      'note': 'Dữ liệu lưu trữ; không tự đổi ngày cũ thành hôm nay.'}
 
 
+def append_web_event(event):
+    """Serialize append across threads/processes; acknowledge only after flush/fsync."""
+    line = (json.dumps(event, ensure_ascii=False, allow_nan=False) + '\n').encode('utf-8')
+    path = ROOT / 'out/insight-web-events.jsonl'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _archive_lock, path.with_suffix('.lock').open('a+b') as lock:
+        if os.name == 'nt':
+            import msvcrt
+            lock.seek(0, os.SEEK_END)
+            if lock.tell() == 0:
+                lock.write(b'0'); lock.flush()
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            with path.open('ab') as output:
+                output.write(line)
+                output.flush()
+                os.fsync(output.fileno())
+        finally:
+            if os.name == 'nt':
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
 def window(records, days, as_of=None):
     end = datetime.fromisoformat(as_of).replace(tzinfo=timezone.utc) + timedelta(days=1) if as_of else datetime.now(timezone.utc)
     start = end - timedelta(days=days)
@@ -78,24 +128,55 @@ def window(records, days, as_of=None):
 
 def chart_snapshots(records):
     snapshots = defaultdict(list)
+    seen = set()
+    invalid_snapshots = set()
     for r in records:
         if r.get('record_type') == 'chart_entry' and identity(r):
-            snapshots[(chart_group(r), (r.get('source_period'), r.get('snapshot_id') or r.get('crawled_at') or r.get('crawled_ms')))].append(r)
+            # Crawler IDs are rounded buckets, not unique crawl executions.
+            # Keep each capture intact before choosing the latest source period.
+            capture = timestamp(r)
+            snapshot = (chart_group(r), (r.get('source_period'), r.get('snapshot_id'), capture))
+            rank, size = r.get('rank'), r.get('chart_size')
+            if type(rank) is not int or rank < 1 or (size is not None and (type(size) is not int or size < rank)):
+                invalid_snapshots.add(snapshot)
+                continue
+            fingerprint = canonical(r)
+            if fingerprint in seen:
+                continue
+            seen.add(fingerprint)
+            snapshots[snapshot].append(r)
     # Use latest entire snapshot for a source period; never union partial snapshots.
     periods = {}
     for (group, snap), rows in snapshots.items():
+        incomplete = (group, snap) in invalid_snapshots
+        unique = {}
+        for row in rows:
+            old = unique.get(identity(row))
+            if old is not None and (old.get('rank'), old.get('chart_size')) != (row.get('rank'), row.get('chart_size')):
+                incomplete = True
+            if old is None or canonical(row) > canonical(old):
+                unique[identity(row)] = row
+        rows = list(unique.values())
+        if incomplete:
+            rows = [dict(r, _snapshot_incomplete=True) for r in rows]
         period = rows[0].get('source_period')
         key = (group, period) if period else (group, 'unknown', str(snap))
         time = max((timestamp(r) for r in rows if timestamp(r)), default=datetime.min.replace(tzinfo=timezone.utc))
-        if key not in periods or time > periods[key][0]:
-            periods[key] = (time, rows)
-    return [rows for _, rows in periods.values()]
+        rows.sort(key=canonical)
+        candidate = (time, canonical(rows))
+        if key not in periods or candidate > periods[key][0]:
+            periods[key] = (candidate, rows)
+    return [rows for _, rows in sorted(periods.values(), key=lambda p: p[0])]
 
 
 def complete(rows):
+    if not rows:
+        return False
     ranks = [r.get('rank') for r in rows]
-    size = rows[0].get('chart_size') or max(ranks, default=0)
-    return bool(size and len(set(identity(r) for r in rows)) == len(rows) == size
+    size = rows[0].get('chart_size')
+    return bool(type(size) is int and size > 0 and all(r.get('chart_size') == size and not r.get('_snapshot_incomplete') for r in rows)
+                and all(type(rank) is int for rank in ranks)
+                and len(set(identity(r) for r in rows)) == len(rows) == size
                 and set(ranks) == set(range(1, size + 1)))
 
 
@@ -105,9 +186,11 @@ def analyze_track_lifecycle(records, track_key=None):
         groups[chart_group(rows[0])].append(rows)
     output = []
     for group, snapshots in groups.items():
-        tracks = {identity(r) for rows in snapshots for r in rows}
-        for track in sorted(tracks):
-            observations = [r for rows in snapshots for r in rows if identity(r) == track]
+        by_track = defaultdict(list)
+        for rows in snapshots:
+            for r in rows:
+                by_track[identity(r)].append(r)
+        for track, observations in sorted(by_track.items()):
             if track_key and track_key not in (track, observations[0].get('track_key')):
                 continue
             known = sorted([r for r in observations if r.get('source_period')], key=lambda r: r['source_period'])
@@ -129,7 +212,7 @@ def analyze_track_lifecycle(records, track_key=None):
                     if complete(latest) and all(identity(r) != track for r in latest):
                         status, reason = 'left_chart', 'Không xuất hiện ở kỳ tiếp theo đã crawl đủ hạng; chỉ kết luận rời BXH này.'
             times = sorted(timestamp(r) for r in observations if timestamp(r))
-            output.append({'track_id': track, 'title': observations[0].get('title'), 'source': group[0],
+            output.append({'track_id': track, 'title': observations[0].get('title'), 'source': group[4] or group[0], 'data_provider': group[0],
                            'chart_id': group[1], 'country': group[2], 'best_rank': min(r['rank'] for r in observations),
                            'periods': len(known), 'observations': len(observations), 'status': status, 'reason': reason,
                            'first_observed': times[0].isoformat() if times else None,
@@ -155,11 +238,13 @@ def analyze_playlist_exposure(records, genre=None):
         if genre and genre != r.get('genre_hint'):
             continue
         pos = r.get('position')
-        if not isinstance(pos, int) or pos < 1:
+        size = r.get('playlist_size')
+        if (type(pos) is not int or pos < 1 or not r.get('playlist_id')
+                or (size is not None and (type(size) is not int or size < pos))):
             continue
         key = (r.get('source'), identity(r), timestamp(r).date().isoformat(), r.get('genre_hint'))
         old = exposures[key].get(r['playlist_id'])
-        if old is None or timestamp(r) > timestamp(old):
+        if old is None or (timestamp(r), canonical(r)) > (timestamp(old), canonical(old)):
             exposures[key][r['playlist_id']] = r
     charts = [r for rows in chart_snapshots(records) for r in rows if r.get('source_period') and r.get('period_type') == 'daily']
     items = []
@@ -183,24 +268,41 @@ def analyze_playlist_exposure(records, genre=None):
 
 
 def compare_country_tastes(records, countries, chart_date=None, top_n=50):
+    def family(row):
+        if row.get('chart_family'):
+            return row['chart_family']
+        country = row.get('country_code') or row.get('chart_scope') or ''
+        return re.sub(r'(^|[_-])' + re.escape(country) + r'($|[_-])', r'\1',
+                      row.get('chart_id') or '', flags=re.I).strip('_-')
     groups = defaultdict(dict)
     rejected = []
     for rows in chart_snapshots(records):
         r = rows[0]
         country = r.get('country_code') or r.get('chart_scope')
-        if r.get('data_provider') != 'spotify_kworb' or r.get('period_type') != 'daily' or country not in countries:
+        if r.get('data_provider') != 'spotify_kworb' or r.get('source') != 'spotify' or r.get('period_type') != 'daily' or country not in countries:
             continue
         period = r.get('source_period')
         if not period or not complete(rows):
             rejected.append({'country': country, 'period': period, 'reason': 'Thiếu kỳ nguồn hoặc BXH không đủ/hạng không liên tục.'})
             continue
-        groups[period][country] = rows
-    available = sorted(p for p, cs in groups.items() if set(countries) <= set(cs))
+        groups[period].setdefault(family(r), {})[country] = rows
+    compatible = {p: {f: cs for f, cs in families.items() if set(countries) <= set(cs)}
+                  for p, families in groups.items()}
+    available = sorted(p for p, families in compatible.items() if families)
     date = chart_date or (available[-1] if available else None)
     if date not in available:
         return {'items': [], 'overlap': [], 'date': date, 'available_dates': available, 'rejected': rejected,
                 'note': 'Chưa có BXH Spotify qua Kworb đủ dữ liệu, cùng ngày cho tất cả quốc gia được chọn.'}
-    selected = groups[date]
+    selected = compatible[date][sorted(compatible[date])[0]]
+    totals = {}
+    for c, rows in selected.items():
+        metrics = [r.get('metric_value') for r in rows]
+        if any(v is not None and (type(v) not in (int, float) or not isfinite(v) or v < 0) for v in metrics):
+            raise ValueError('Stream counts must be finite nonnegative numbers')
+        total = None if any(v is None for v in metrics) else sum(metrics)
+        if total is not None and not isfinite(total):
+            raise ValueError('Stream total overflow')
+        totals[c] = total
     tops = {c: {identity(r) for r in selected[c] if r['rank'] <= top_n} for c in countries}
     if any(len(tops[c]) < top_n for c in countries):
         return {'items': [], 'overlap': [], 'date': date, 'note': 'BXH không đủ top N yêu cầu.'}
@@ -214,7 +316,7 @@ def compare_country_tastes(records, countries, chart_date=None, top_n=50):
         for c in countries:
             rows = selected[c]
             hit = next((r for r in rows if identity(r) == track), None)
-            total = sum(r.get('metric_value') or 0 for r in rows)
+            total = totals[c]
             entry['countries'][c] = {'rank': hit['rank'], 'chart_size': len(rows),
                 'rank_score': (len(rows) - hit['rank'] + 1) / len(rows),
                 'chart_stream_share': hit['metric_value'] / total if total and hit.get('metric_value') is not None else None} if hit else None
@@ -227,7 +329,18 @@ def compare_country_tastes(records, countries, chart_date=None, top_n=50):
 def summarize_listening_feedback(records, source='web', group_by='track'):
     groups = defaultdict(list)
     seen, source_counts = set(), Counter()
+    events, conflicts = {}, set()
     for r in records:
+        eid = r.get('event_id')
+        if not eid:
+            continue
+        if eid in events and canonical(events[eid]) != canonical(r):
+            conflicts.add(eid)
+        else:
+            events[eid] = r
+    for eid in conflicts:
+        events.pop(eid, None)
+    for _, r in sorted(events.items()):
         if r.get('action') not in ('play', 'skip', 'like'):
             continue
         if not r.get('event_id') or r['event_id'] in seen:
@@ -249,7 +362,8 @@ def summarize_listening_feedback(records, source='web', group_by='track'):
                       'play': c['play'], 'skip': c['skip'], 'like': c['like'],
                       'skip_rate': c['skip'] / denominator if denominator else None,
                       'users': len({r['user_id'] for r in rows if r.get('user_id')}), 'events': len(rows)})
-    return {'items': sorted(items, key=lambda x: -x['events']), 'source': source, 'source_counts': dict(source_counts),
+    return {'items': sorted(items, key=lambda x: (-x['events'], str(x['group']))), 'source': source, 'source_counts': dict(source_counts),
+            'conflicting_event_ids': sorted(conflicts),
             'note': 'Đếm thao tác, không đếm phiên nghe. skip/(play+skip); không tính thời lượng/hoàn tất. User ID chưa chứng minh người thật riêng biệt. Nguồn thiếu nhãn được giữ unknown.'}
 
 

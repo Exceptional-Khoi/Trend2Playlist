@@ -1,0 +1,1163 @@
+[
+  {
+    "technique": "state-transition",
+    "inputs": "Ranks [8,5,2], [2,5,8], [4,6,5], [1,8,3], two periods",
+    "expected": "rising/falling/stable/fluctuating/insufficient_data",
+    "id": "A01",
+    "requirement": "Three observed ranks determine direction or stability",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_lifecycle_states"
+  },
+  {
+    "technique": "decision-table",
+    "priority": "P0",
+    "inputs": "Track x disappears; later snapshot full, incomplete, duplicate rank, duplicate identity",
+    "expected": "left_chart only with full valid chart",
+    "risk": "False removal from chart",
+    "id": "A02",
+    "requirement": "Absence is established only by a complete later chart",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_absence_requires_complete_chart"
+  },
+  {
+    "technique": "metamorphic",
+    "priority": "P0",
+    "inputs": "A complete later chart duplicated byte-for-byte",
+    "expected": "Same removal status and observations after dedup",
+    "risk": "Duplicates hide real chart departures",
+    "id": "A03",
+    "requirement": "Repeated identical records do not invalidate a complete snapshot",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_duplicate_complete_snapshot"
+  },
+  {
+    "technique": "state-transition",
+    "expected": "Present at latest period",
+    "id": "A04",
+    "requirement": "A returning track is present, not left_chart",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_returning_track"
+  },
+  {
+    "technique": "metamorphic",
+    "expected": "Newer snapshot chosen, period counted once",
+    "id": "A05",
+    "requirement": "Latest source-period snapshot wins independently of arrival order",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_latest_snapshot_per_period"
+  },
+  {
+    "technique": "equivalence",
+    "inputs": "Same provider/id/chart label but spotify and apple_music sources",
+    "expected": "Two independently scoped tracks",
+    "risk": "Cross-platform false entity merge",
+    "id": "A06",
+    "requirement": "Platform scope separates equal IDs and chart labels",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_lifecycle_source_scope"
+  },
+  {
+    "technique": "boundary",
+    "expected": "Reject ValueError or exclude invalid row; never rank <=0, bool, NaN or beyond size",
+    "id": "A07",
+    "requirement": "Invalid ranks cannot become valid best_rank values",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_invalid_lifecycle_rank"
+  },
+  {
+    "technique": "metamorphic",
+    "expected": "Same UTC instant; unknown period not fabricated",
+    "id": "A08",
+    "requirement": "Equivalent aware timestamps represent the same instant",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_timezones_and_unknown_period"
+  },
+  {
+    "technique": "boundary",
+    "inputs": "ts_ms=0, crawled_ms=1000",
+    "expected": "1970-01-01T00:00Z",
+    "risk": "Truthiness drops epoch boundary",
+    "id": "A09",
+    "requirement": "Epoch zero is a valid timestamp, not missing",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_epoch_zero"
+  },
+  {
+    "technique": "differential",
+    "inputs": "Independent playlists positions 1,2,8 with lags 1/3/7",
+    "expected": "Sum 1/log2(position+1), rank_before-rank_after",
+    "id": "B01",
+    "requirement": "Playlist placement formula uses logarithmic positions",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_playlist_formula"
+  },
+  {
+    "technique": "decision-table",
+    "expected": "Mirrors/unknown excluded; editorial counted",
+    "id": "B02",
+    "requirement": "Only verified editorial playlists enter exposure statistics",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_playlist_classification"
+  },
+  {
+    "technique": "boundary",
+    "expected": "Zero editorial exposures for invalid position",
+    "id": "B03",
+    "requirement": "Invalid positions are excluded",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_playlist_invalid_position"
+  },
+  {
+    "technique": "metamorphic",
+    "expected": "Same independent score and counts",
+    "id": "B04",
+    "requirement": "Duplicate playlist rows do not multiply exposure",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_playlist_dedup_and_genre"
+  },
+  {
+    "technique": "decision-table",
+    "expected": "No observation for missing lag or another source",
+    "id": "B05",
+    "requirement": "No future observation or cross-platform pairing is invented",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_playlist_missing_or_different_platform"
+  },
+  {
+    "technique": "boundary",
+    "inputs": "position=5, playlist_size=2",
+    "expected": "Rejected or excluded",
+    "risk": "Out-of-range exposure",
+    "id": "B06",
+    "requirement": "Positions outside a declared playlist size cannot contribute",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_playlist_declared_size"
+  },
+  {
+    "technique": "differential",
+    "priority": "P0",
+    "expected": "Exact set intersection/union; full-chart denominator",
+    "id": "C01",
+    "requirement": "Jaccard, rank score and shares agree with an independent set oracle",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_country_reference"
+  },
+  {
+    "technique": "decision-table",
+    "expected": "No result for missing period, weekly chart, duplicate or missing ranks",
+    "id": "C02",
+    "requirement": "Countries are compared only at a common complete daily period",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_country_invalid_chart"
+  },
+  {
+    "technique": "boundary",
+    "inputs": "One stream=100, another stream missing",
+    "expected": "Unknown share or explicit rejection",
+    "risk": "Inflated share with incomplete denominator",
+    "id": "C03",
+    "requirement": "Missing streams are not silently imputed as zero",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_missing_stream_denominator"
+  },
+  {
+    "technique": "boundary",
+    "inputs": "Negative, infinity or NaN stream metric",
+    "expected": "Controlled rejection or no invalid share",
+    "id": "C04",
+    "requirement": "Valid shares are finite and within [0,1]",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_invalid_streams"
+  },
+  {
+    "technique": "decision-table",
+    "inputs": "VN daily track chart versus TH daily viral chart",
+    "expected": "Refuse mixed chart families",
+    "risk": "Invalid cross-market comparison",
+    "id": "C05",
+    "requirement": "Countries must use compatible chart families",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_country_chart_family"
+  },
+  {
+    "technique": "boundary",
+    "expected": "Zero share preserved; oversize top N empty",
+    "id": "C06",
+    "requirement": "Zero stream is distinct from missing; top N cannot exceed chart",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_country_zero_and_top_n"
+  },
+  {
+    "technique": "differential",
+    "priority": "P0",
+    "expected": "skip/(play+skip), null for like-only",
+    "id": "D01",
+    "requirement": "Feedback rates count actions and distinct event IDs, not duration",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_feedback_reference"
+  },
+  {
+    "technique": "equivalence",
+    "expected": "Only selected source counted, missing ID dropped, UTC+7 hour",
+    "id": "D02",
+    "requirement": "Source separation, missing IDs, grouping and VN midnight boundaries",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_feedback_groups_sources"
+  },
+  {
+    "technique": "metamorphic",
+    "inputs": "Conflicting duplicate same ID: web play vs simulator skip",
+    "expected": "Deterministic resolution or explicit rejection",
+    "risk": "Replay order changes source attribution",
+    "id": "D03",
+    "requirement": "Duplicate IDs do not make semantic results depend on arrival order",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_conflicting_duplicate_order"
+  },
+  {
+    "technique": "boundary",
+    "expected": "Inclusive lower and exclusive upper UTC boundaries",
+    "id": "D04",
+    "requirement": "Window excludes old/future records without rewriting timestamps",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_window_bounds"
+  },
+  {
+    "technique": "fuzz",
+    "expected": "Controlled validation error; normalized result is a dictionary",
+    "id": "D05",
+    "requirement": "A malformed nested JSON envelope is not accepted as a record",
+    "file": "tests/adversarial/test_adv_analytics.py",
+    "function": "test_normalize_invalid_top_level"
+  },
+  {
+    "technique": "HTTP/partition",
+    "expected": "HTTP 200, items list, archive metadata",
+    "id": "G01",
+    "requirement": "All four insight routes return typed empty results",
+    "file": "tests/adversarial/test_adv_api.py",
+    "function": "test_empty_routes"
+  },
+  {
+    "technique": "HTTP/boundary",
+    "expected": "Invalid values return 400 or 422, valid boundaries 200",
+    "id": "G02",
+    "requirement": "Query parameter boundaries are enforced before dependencies",
+    "file": "tests/adversarial/test_adv_api.py",
+    "function": "test_query_validation"
+  },
+  {
+    "technique": "HTTP/fuzz",
+    "expected": "400 for non-ISO Unicode pairs",
+    "risk": "Invalid countries silently look like no-data",
+    "id": "G03",
+    "requirement": "ISO country codes must use Latin alphabet, not any Unicode letters",
+    "file": "tests/adversarial/test_adv_api.py",
+    "function": "test_country_iso_values"
+  },
+  {
+    "technique": "HTTP/fuzz",
+    "priority": "P0",
+    "expected": "422 on malformed timestamp or nested record",
+    "id": "G04",
+    "requirement": "Malformed archived records produce controlled 422, never HTTP 500",
+    "file": "tests/adversarial/test_adv_api.py",
+    "function": "test_malformed_archive"
+  },
+  {
+    "technique": "HTTP/filesystem",
+    "expected": "Valid lines preserved; invalid lines counted; HTTP 200 or controlled 422",
+    "id": "G05",
+    "requirement": "Malformed JSONL input is reported without crashing the loader",
+    "file": "tests/adversarial/test_adv_api.py",
+    "function": "test_bad_jsonl_top_level"
+  },
+  {
+    "technique": "HTTP/fault-injection",
+    "priority": "P0",
+    "expected": "503, no archive access",
+    "id": "G06",
+    "requirement": "Elasticsearch errors never fall back to archive",
+    "file": "tests/adversarial/test_adv_api.py",
+    "function": "test_es_fail_closed"
+  },
+  {
+    "technique": "HTTP/fault-injection",
+    "priority": "P0",
+    "expected": "422 or 503, scroll delete attempted",
+    "id": "G07",
+    "requirement": "Malformed ES envelope/value yields a controlled data error and releases scroll",
+    "file": "tests/adversarial/test_adv_api.py",
+    "function": "test_malformed_es_value"
+  },
+  {
+    "technique": "HTTP/boundary/stress",
+    "priority": "P0",
+    "inputs": "199999 / 200000 / 200001 real JSON decoded records, pages of 1000",
+    "expected": "200/200/422, DELETE scroll on every path",
+    "id": "G08",
+    "requirement": "Raw record limit has exact inclusive boundary and releases scroll",
+    "file": "tests/adversarial/test_adv_api.py",
+    "function": "test_record_limit"
+  },
+  {
+    "technique": "HTTP/fault-injection",
+    "priority": "P0",
+    "expected": "HTTP 503; pod must not be Ready",
+    "risk": "Broken dependency advertised healthy",
+    "id": "G09",
+    "requirement": "Readiness health fails when required ES is unreachable",
+    "file": "tests/adversarial/test_adv_api.py",
+    "function": "test_health_dependency_status"
+  },
+  {
+    "technique": "configuration/decision-table",
+    "expected": "503 configuration error, no silent archive fallback",
+    "id": "G10",
+    "requirement": "Unknown backend mode fails closed",
+    "file": "tests/adversarial/test_adv_api.py",
+    "function": "test_unknown_backend"
+  },
+  {
+    "technique": "HTTP/boundary",
+    "priority": "P0",
+    "expected": "Reject blank or >100 chars without sending Kafka",
+    "id": "D06",
+    "requirement": "User ID constraints are consistent across archive and Kafka modes",
+    "file": "tests/adversarial/test_adv_api.py",
+    "function": "test_listen_user_validation"
+  },
+  {
+    "technique": "HTTP/partition",
+    "priority": "P0",
+    "expected": "400 or 404 and no Kafka send",
+    "id": "D07",
+    "requirement": "Unknown tracks are rejected when lookup succeeds with not-found",
+    "file": "tests/adversarial/test_adv_api.py",
+    "function": "test_unknown_track"
+  },
+  {
+    "technique": "HTTP/decision-table",
+    "priority": "P0",
+    "expected": "listen_ms missing or null for unmeasured web action",
+    "risk": "Fabricated evidence of listening",
+    "id": "D08",
+    "requirement": "Clicking play/skip never fabricates measured playback duration",
+    "file": "tests/adversarial/test_adv_api.py",
+    "function": "test_click_is_not_playback_measurement"
+  },
+  {
+    "technique": "HTTP/partition",
+    "expected": "400 invalid enum, 200 valid Unicode",
+    "id": "D09",
+    "requirement": "Invalid province/action is rejected; Unicode IDs are accepted",
+    "file": "tests/adversarial/test_adv_api.py",
+    "function": "test_listen_enums_unicode"
+  },
+  {
+    "technique": "HTTP/fault-injection",
+    "priority": "P0",
+    "expected": "503, no local event file",
+    "id": "D10",
+    "requirement": "Kafka unavailable returns 503 without writing archive",
+    "file": "tests/adversarial/test_adv_api.py",
+    "function": "test_listen_kafka_failure"
+  },
+  {
+    "technique": "HTTP/concurrency",
+    "expected": "32 successes, 32 valid unique event IDs, no lost append",
+    "id": "D11",
+    "requirement": "Concurrent archive requests preserve complete unique JSON lines",
+    "file": "tests/adversarial/test_adv_api.py",
+    "function": "test_concurrent_archive_append"
+  },
+  {
+    "technique": "HTTP/route-inventory",
+    "expected": "HTTP 200 under empty ES; genuine removed routes 404",
+    "id": "G11",
+    "requirement": "Compatibility endpoints remain discoverable and return stable empty structures",
+    "file": "tests/adversarial/test_adv_api.py",
+    "function": "test_endpoint_inventory"
+  },
+  {
+    "technique": "HTTP/security",
+    "expected": "404, no application file bytes",
+    "id": "G12",
+    "requirement": "Removed dashboard and path traversal routes cannot expose files",
+    "file": "tests/adversarial/test_adv_api.py",
+    "function": "test_removed_and_traversal"
+  },
+  {
+    "technique": "HTTP/fuzz",
+    "priority": "P0",
+    "expected": "Controlled 422 for non-finite data",
+    "id": "G13",
+    "requirement": "HTTP JSON never emits NaN/Infinity",
+    "file": "tests/adversarial/test_adv_api.py",
+    "function": "test_nonfinite_serialization"
+  },
+  {
+    "technique": "HTTP/boundary",
+    "expected": "422, never negative size sent to ES",
+    "id": "G14",
+    "requirement": "Legacy numeric pagination limits reject negative sizes",
+    "file": "tests/adversarial/test_adv_api.py",
+    "function": "test_legacy_lower_bounds"
+  },
+  {
+    "technique": "mocked HTTP/fault-injection",
+    "priority": "P0",
+    "inputs": "Apple/Spotify/Zing/YouTube/Trends × 401/403/404/429/500/502/503/timeout/reset/DNS",
+    "expected": "Exception or empty output, never data",
+    "environment": "mocked HTTP only",
+    "id": "E01",
+    "requirement": "Every source refuses HTTP errors without emitting fabricated records",
+    "file": "tests/adversarial/test_adv_crawlers.py",
+    "function": "test_source_http_faults"
+  },
+  {
+    "technique": "mocked HTTP/fuzz",
+    "expected": "Empty result or explicit parse failure",
+    "id": "E02",
+    "requirement": "Malformed successful responses never produce records with fabricated schema",
+    "file": "tests/adversarial/test_adv_crawlers.py",
+    "function": "test_malformed_200"
+  },
+  {
+    "technique": "schema/partition",
+    "expected": "Exact input title/artist/ID; ranks 1..N",
+    "id": "E03",
+    "requirement": "Apple mapper preserves Unicode, source ID and ranking",
+    "file": "tests/adversarial/test_adv_crawlers.py",
+    "function": "test_apple_valid_unicode"
+  },
+  {
+    "technique": "schema/boundary",
+    "expected": "Reject or skip record; no unknown identity chart",
+    "id": "E04",
+    "requirement": "A source with missing title cannot emit a usable chart record",
+    "file": "tests/adversarial/test_adv_crawlers.py",
+    "function": "test_missing_titles"
+  },
+  {
+    "technique": "mocked HTML/schema",
+    "expected": "Daily period from source heading, no crawl-date substitution",
+    "id": "E05",
+    "requirement": "Kworb HTML parser preserves period, country and IDs",
+    "file": "tests/adversarial/test_adv_crawlers.py",
+    "function": "test_kworb_fixture"
+  },
+  {
+    "technique": "mocked HTML/fuzz",
+    "expected": "No records when table layout changed",
+    "id": "E06",
+    "requirement": "Changed HTML cannot silently parse as a valid chart",
+    "file": "tests/adversarial/test_adv_crawlers.py",
+    "function": "test_kworb_changed_layout"
+  },
+  {
+    "technique": "data-quality",
+    "inputs": "HTML duplicate track ID or rank 0/-1",
+    "expected": "Reject/skip malformed chart",
+    "risk": "Invalid source data reported as successful countries crawl",
+    "id": "E07",
+    "requirement": "Duplicate IDs and nonpositive ranks are not published as clean country charts",
+    "file": "tests/adversarial/test_adv_crawlers.py",
+    "function": "test_kworb_invalid_chart"
+  },
+  {
+    "technique": "fault-injection/CLI",
+    "priority": "P0",
+    "expected": "Partial mode preserves good records; strict mode exits failure",
+    "id": "E08",
+    "requirement": "A failing source does not discard independent successful sources",
+    "file": "tests/adversarial/test_adv_crawlers.py",
+    "function": "test_source_failure_isolation"
+  },
+  {
+    "technique": "pagination/metamorphic",
+    "expected": "Each comment emitted once; bounded calls",
+    "id": "E09",
+    "requirement": "Repeated pagination rows are deduplicated by comment ID",
+    "file": "tests/adversarial/test_adv_crawlers.py",
+    "function": "test_comment_repeated_page"
+  },
+  {
+    "technique": "fault-injection/state-transition",
+    "expected": "Four attempts, delays 60/120/180/240, then RuntimeError",
+    "id": "E10",
+    "requirement": "429 backoff is bounded and honors increasing delays without real waiting",
+    "file": "tests/adversarial/test_adv_crawlers.py",
+    "function": "test_trends_backoff"
+  },
+  {
+    "technique": "mocked producer/fault-injection",
+    "expected": "Count error and flush/close; never claim transport E2E",
+    "id": "E11",
+    "requirement": "Kafka sink reports asynchronous delivery failures",
+    "file": "tests/adversarial/test_adv_crawlers.py",
+    "function": "test_sink_async_failure"
+  },
+  {
+    "technique": "schema/fuzz",
+    "expected": "ValueError or no non-RFC JSON",
+    "risk": "NaN payload crosses Kafka boundary",
+    "id": "E12",
+    "requirement": "JSON serialization must not publish non-standard NaN",
+    "file": "tests/adversarial/test_adv_crawlers.py",
+    "function": "test_jsonl_nonfinite"
+  },
+  {
+    "technique": "security/path-traversal",
+    "expected": "Reject topic traversal, no outside file",
+    "environment": "temporary filesystem",
+    "id": "J01",
+    "requirement": "JSONL topic cannot escape its output directory",
+    "file": "tests/adversarial/test_adv_crawlers.py",
+    "function": "test_jsonl_path_traversal"
+  },
+  {
+    "technique": "legacy/fault-injection",
+    "priority": "P1",
+    "inputs": "Legacy Apple CLI network failure with no API key",
+    "expected": "Synthetic provenance or nonzero failure; never ordinary apple_music records",
+    "id": "E13",
+    "requirement": "Legacy fallback records must identify themselves as synthetic",
+    "file": "tests/adversarial/test_adv_crawlers.py",
+    "function": "test_legacy_fallback_provenance"
+  },
+  {
+    "technique": "regression/state-transition",
+    "priority": "P0",
+    "expected": "No false left_chart; one source period per recrawl",
+    "id": "X01",
+    "requirement": "A late partial recrawl does not justify departure or union with old full snapshot",
+    "file": "tests/adversarial/test_adv_deep_dive.py",
+    "function": "test_latest_partial_recrawl"
+  },
+  {
+    "technique": "differential",
+    "expected": "Three pair scores at 0, 1/3, 1",
+    "id": "X02",
+    "requirement": "Three country pairwise comparisons match independent set oracle",
+    "file": "tests/adversarial/test_adv_deep_dive.py",
+    "function": "test_three_countries"
+  },
+  {
+    "technique": "HTTP/fuzz",
+    "expected": "Controlled validation/dependency error or sanitized event, never 500",
+    "id": "X03",
+    "requirement": "Malformed track metadata cannot crash even archive button requests",
+    "file": "tests/adversarial/test_adv_deep_dive.py",
+    "function": "test_listen_corrupt_metadata"
+  },
+  {
+    "technique": "loopback HTTP/fault-injection",
+    "expected": "3 attempts for 429/503, 1 for 401/403/404; no external calls",
+    "environment": "stdlib loopback HTTP server; requests transport real",
+    "id": "X04",
+    "requirement": "Real HTTP adapter retries selected status codes, not auth/not-found",
+    "file": "tests/adversarial/test_adv_deep_dive.py",
+    "function": "test_real_local_retry"
+  },
+  {
+    "technique": "real ES/concurrency",
+    "priority": "P0",
+    "expected": "Newer run document survives stale cleanup",
+    "environment": "owned disposable ES; actual helper, writer adapter uses HTTP, no Spark connector",
+    "id": "X05",
+    "requirement": "Concurrent ES replacement cleanup reproduces against actual local ES",
+    "file": "tests/adversarial/test_adv_deep_dive.py",
+    "function": "test_real_es_replace_race"
+  },
+  {
+    "technique": "static YAML validation",
+    "expected": "All workload containers have memory limits/requests and correct namespace",
+    "environment": "PyYAML only; not Kubernetes schema validation",
+    "id": "I01",
+    "requirement": "Manifests parse and agree on namespace, resource requests and limits",
+    "file": "tests/adversarial/test_adv_deployment.py",
+    "function": "test_yaml_resources"
+  },
+  {
+    "technique": "static cross-reference",
+    "expected": "No unresolved required references",
+    "id": "I02",
+    "requirement": "Every referenced ConfigMap/Secret/PVC has a declarative or script producer",
+    "file": "tests/adversarial/test_adv_deployment.py",
+    "function": "test_references"
+  },
+  {
+    "technique": "static regression",
+    "priority": "P0",
+    "expected": "enableServiceLinks false or explicit safe SPARK_MASTER_PORT",
+    "risk": "Spark master NumberFormatException",
+    "id": "I03",
+    "requirement": "Spark master must disable injected conflicting service-link port variables",
+    "file": "tests/adversarial/test_adv_deployment.py",
+    "function": "test_master_service_link_port"
+  },
+  {
+    "technique": "configuration regression",
+    "priority": "P1",
+    "expected": "CHECKPOINT_PATH changes root; recommend uses its own suffix",
+    "risk": "Deployment rollback reuses incompatible checkpoint",
+    "id": "I04",
+    "requirement": "Stateful query recovery honors the documented checkpoint root",
+    "file": "tests/adversarial/test_adv_deployment.py",
+    "function": "test_recommend_checkpoint_override"
+  },
+  {
+    "technique": "static script contract",
+    "expected": "Topic bootstrap before speed-layer; insights.py in ConfigMap; ES backend configured",
+    "id": "I05",
+    "requirement": "Startup dependency order covers country topic and waits for driver",
+    "file": "tests/adversarial/test_adv_deployment.py",
+    "function": "test_deploy_data_dependencies"
+  },
+  {
+    "technique": "shell syntax/compatibility",
+    "expected": "bash -n succeeds, no CRLF",
+    "environment": "Git Bash or bash, no script execution",
+    "id": "I06",
+    "requirement": "Bash scripts parse and use LF",
+    "file": "tests/adversarial/test_adv_deployment.py",
+    "function": "test_shell_syntax"
+  },
+  {
+    "technique": "CI audit",
+    "expected": "pytest, compileall and bash syntax checks present",
+    "risk": "Documented validation omitted",
+    "id": "I07",
+    "requirement": "CI actually invokes its documented regression and syntax checks",
+    "file": "tests/adversarial/test_adv_deployment.py",
+    "function": "test_ci_schema_validation"
+  },
+  {
+    "technique": "AST/compile",
+    "expected": "No SyntaxError across all Python modules",
+    "id": "I08",
+    "requirement": "Production Python files compile without executing import side effects",
+    "file": "tests/adversarial/test_adv_deployment.py",
+    "function": "test_python_compile"
+  },
+  {
+    "technique": "offline schema validation",
+    "expected": "All manifests validate strictly against 1.31",
+    "environment": "kubernetes-validate; no live API",
+    "id": "I09",
+    "requirement": "Manifests satisfy Kubernetes OpenAPI JSON schema",
+    "file": "tests/adversarial/test_adv_deployment.py",
+    "function": "test_kubernetes_schema"
+  },
+  {
+    "technique": "metamorphic",
+    "expected": "Same key for orthographic aliases",
+    "id": "F01",
+    "requirement": "Case, accents, NFC/NFD, punctuation and whitespace normalize equivalently",
+    "file": "tests/adversarial/test_adv_entities.py",
+    "function": "test_key_aliases"
+  },
+  {
+    "technique": "entity-resolution/partition",
+    "priority": "P1",
+    "expected": "Different keys for distinct Japanese/Thai titles",
+    "risk": "False cross-language merges",
+    "id": "F02",
+    "requirement": "Distinct non-Latin track IDs must not collapse to unknown",
+    "file": "tests/adversarial/test_adv_entities.py",
+    "function": "test_nonlatin_key_collision"
+  },
+  {
+    "technique": "entity-resolution/partition",
+    "expected": "Distinct keys when version title differs",
+    "id": "F03",
+    "requirement": "Original/remix/live/acoustic/cover versions retain meaningful distinctions",
+    "file": "tests/adversarial/test_adv_entities.py",
+    "function": "test_version_separation"
+  },
+  {
+    "technique": "equivalence",
+    "expected": "Different identities",
+    "id": "F04",
+    "requirement": "Different primary artists are not merged merely by title",
+    "file": "tests/adversarial/test_adv_entities.py",
+    "function": "test_artist_identity"
+  },
+  {
+    "technique": "entity-resolution/adversarial",
+    "expected": "Alex and Alexa remain different",
+    "risk": "Artist names truncated to identical prefix",
+    "id": "F05",
+    "requirement": "Legacy artist separator x must be a word, not part of a name",
+    "file": "tests/adversarial/test_adv_entities.py",
+    "function": "test_legacy_artist_separator"
+  },
+  {
+    "technique": "metamorphic",
+    "expected": "Đen and Den normalize equally",
+    "id": "F06",
+    "requirement": "Legacy normalization must handle Vietnamese D-stroke aliases",
+    "file": "tests/adversarial/test_adv_entities.py",
+    "function": "test_legacy_d_stroke"
+  },
+  {
+    "technique": "entity-resolution/adversarial",
+    "expected": "Different keys for original and remix",
+    "risk": "All parenthesized content discarded",
+    "id": "F07",
+    "requirement": "Legacy resolution cannot erase remix/live version boundaries",
+    "file": "tests/adversarial/test_adv_entities.py",
+    "function": "test_legacy_version_collision"
+  },
+  {
+    "technique": "filesystem/metamorphic",
+    "expected": "Same canonical IDs under input permutation",
+    "id": "F08",
+    "requirement": "Local resolution is deterministic and preserves multiple sources",
+    "file": "tests/adversarial/test_adv_entities.py",
+    "function": "test_resolution_order"
+  },
+  {
+    "technique": "decision-table",
+    "expected": "Title province suppressed, self-identification retained otherwise",
+    "id": "F09",
+    "requirement": "Song titles containing province names do not prove listener location",
+    "file": "tests/adversarial/test_adv_entities.py",
+    "function": "test_province_song_false_positive"
+  },
+  {
+    "technique": "boundary/differential",
+    "expected": "1 TR = 1000000; 2.5K = 2500",
+    "id": "F10",
+    "requirement": "Count parser uses Vietnamese million suffix TR before trillion T",
+    "file": "tests/adversarial/test_adv_entities.py",
+    "function": "test_count_units"
+  },
+  {
+    "priority": "P0",
+    "expected": "No left_chart without a verified complete snapshot",
+    "id": "FX01",
+    "requirement": "Rejected/unknown-size snapshot cannot prove chart departure",
+    "file": "tests/adversarial/test_adv_fix_regressions.py",
+    "function": "test_invalid_snapshot_no_false_departure"
+  },
+  {
+    "technique": "metamorphic",
+    "expected": "One source period, consistent result regardless of arrival order",
+    "id": "FX02",
+    "requirement": "Equal-time recrawl ties are deterministic under permutations",
+    "file": "tests/adversarial/test_adv_fix_regressions.py",
+    "function": "test_snapshot_time_tie"
+  },
+  {
+    "technique": "identity regression",
+    "expected": "Distinct mixed-script keys; existing Latin key unchanged",
+    "id": "FX03",
+    "requirement": "Non-Latin title mixed with Latin cannot collide; Latin aliases stay compatible",
+    "file": "tests/adversarial/test_adv_fix_regressions.py",
+    "function": "test_unicode_identity_and_compatibility"
+  },
+  {
+    "priority": "P0",
+    "expected": "Only clean event counted with conflict ID exposed",
+    "id": "FX04",
+    "requirement": "Conflicting event IDs are quarantined while clean events remain",
+    "file": "tests/adversarial/test_adv_fix_regressions.py",
+    "function": "test_event_conflict_quarantine"
+  },
+  {
+    "technique": "HTTP/deployment regression",
+    "priority": "P0",
+    "expected": "live 200, readiness503 for ES red/error, 200 yellow",
+    "id": "FX05",
+    "requirement": "Liveness survives dependency failure while readiness fails",
+    "file": "tests/adversarial/test_adv_fix_regressions.py",
+    "function": "test_separate_liveness_readiness"
+  },
+  {
+    "technique": "HTTP/boundary",
+    "expected": "400 invalid date format",
+    "id": "FX06",
+    "requirement": "chart_date has the same strict calendar contract as as_of",
+    "file": "tests/adversarial/test_adv_fix_regressions.py",
+    "function": "test_chart_date_strict"
+  },
+  {
+    "technique": "HTTP/fault-injection",
+    "priority": "P0",
+    "expected": "503, no Kafka send",
+    "id": "FX07",
+    "requirement": "Metadata dependency outage cannot silently accept an unverified track",
+    "file": "tests/adversarial/test_adv_fix_regressions.py",
+    "function": "test_listen_lookup_unavailable"
+  },
+  {
+    "technique": "HTTP/filesystem fault",
+    "priority": "P0",
+    "expected": "503 on fsync failure",
+    "id": "FX08",
+    "requirement": "Unflushed archive events cannot be acknowledged as durable",
+    "file": "tests/adversarial/test_adv_fix_regressions.py",
+    "function": "test_append_flush_failure"
+  },
+  {
+    "technique": "filesystem/multiprocess concurrency",
+    "priority": "P0",
+    "inputs": "4 processes x 40 Unicode events; start gated through stdin",
+    "expected": "160 complete lines with unique IDs; no lost event",
+    "id": "FX09",
+    "requirement": "Archive append is serialized across separate OS processes",
+    "file": "tests/adversarial/test_adv_fix_regressions.py",
+    "function": "test_multiprocess_archive_append"
+  },
+  {
+    "technique": "real ES/replacement regression",
+    "priority": "P0",
+    "expected": "Stale ID removed, new generation retained",
+    "environment": "owned disposable local ES; production helper with HTTP writer adapter",
+    "id": "FX10",
+    "requirement": "Safe ES cleanup still removes obsolete documents in sequential reruns",
+    "file": "tests/adversarial/test_adv_fix_regressions.py",
+    "function": "test_real_es_cleanup_still_removes_old"
+  },
+  {
+    "expected": "None for not-found, exceptions for IO/corruption tested elsewhere",
+    "id": "FX11",
+    "requirement": "Missing view remains a valid bootstrap case",
+    "file": "tests/adversarial/test_adv_fix_regressions.py",
+    "function": "test_missing_view_bootstrap"
+  },
+  {
+    "technique": "filesystem/provenance regression",
+    "expected": "No canonical tracks from synthetic samples",
+    "id": "FX12",
+    "requirement": "Synthetic fallback data cannot enter legacy entity resolution",
+    "file": "tests/adversarial/test_adv_fix_regressions.py",
+    "function": "test_synthetic_excluded_from_resolution"
+  },
+  {
+    "technique": "ES/fault-injection",
+    "priority": "P0",
+    "expected": "Failure propagated before any write",
+    "id": "FX13",
+    "requirement": "Preflight failure cannot cause a batch write or deletion",
+    "file": "tests/adversarial/test_adv_fix_regressions.py",
+    "function": "test_es_preflight_failure_preserves_data"
+  },
+  {
+    "technique": "snapshot fault regression",
+    "priority": "P0",
+    "expected": "Invalid snapshot cannot prove departure; caller input unchanged",
+    "id": "FX14",
+    "requirement": "Dropping an invalid extra row must not silently promote snapshot completeness",
+    "file": "tests/adversarial/test_adv_fix_regressions.py",
+    "function": "test_invalid_extra_row_not_promoted"
+  },
+  {
+    "technique": "real ES+Kafka+HTTP integration",
+    "priority": "P0",
+    "expected": "Three unique IDs received, source web, no fabricated duration",
+    "environment": "owned ES/Kafka; TestClient handlers and producer/get_doc actual; no Spark/HDFS E2E claim",
+    "id": "FX15",
+    "requirement": "Listen HTTP validates real ES catalog and produces real Kafka web events",
+    "file": "tests/adversarial/test_adv_fix_regressions.py",
+    "function": "test_real_listen_es_kafka"
+  },
+  {
+    "technique": "entity/timezone regression",
+    "expected": "Later UTC timestamp wins before rank tie-break",
+    "id": "FX16",
+    "requirement": "Legacy representative freshness compares instants across timezones",
+    "file": "tests/adversarial/test_adv_fix_regressions.py",
+    "function": "test_legacy_freshness_timezones"
+  },
+  {
+    "technique": "schema/source regression",
+    "expected": "Spotify and Apple visible as distinct sources with shared provider",
+    "id": "FX17",
+    "requirement": "Lifecycle output identifies the platform separately from its provider",
+    "file": "tests/adversarial/test_adv_fix_regressions.py",
+    "function": "test_lifecycle_platform_provenance"
+  },
+  {
+    "technique": "schema/source regression",
+    "expected": "No Spotify comparison using an Apple chart",
+    "id": "FX18",
+    "requirement": "Country comparison rejects contradictory platform/provider metadata",
+    "file": "tests/adversarial/test_adv_fix_regressions.py",
+    "function": "test_country_platform_metadata"
+  },
+  {
+    "technique": "performance/stress",
+    "inputs": "64/256/1024 distinct tracks, 3 periods; exact counts",
+    "expected": "All unique tracks retained; record measured time/memory without invented SLA",
+    "environment": "bounded local CPU/RAM",
+    "id": "J03",
+    "requirement": "Measured analysis scaling preserves valid results",
+    "file": "tests/adversarial/test_adv_performance_security.py",
+    "function": "test_analysis_scaling"
+  },
+  {
+    "technique": "stress/metamorphic",
+    "inputs": "5000 user IDs and 50000 rows",
+    "expected": "5000 unique users and 5000 events after dedup",
+    "id": "J04",
+    "requirement": "High-cardinality users and duplicate-heavy batches preserve exact counts",
+    "file": "tests/adversarial/test_adv_performance_security.py",
+    "function": "test_feedback_stress"
+  },
+  {
+    "technique": "repeatability/metamorphic",
+    "expected": "Same output for 20 invocations; input unchanged",
+    "id": "J05",
+    "requirement": "Repeated analyses remain semantically stable and do not mutate inputs",
+    "file": "tests/adversarial/test_adv_performance_security.py",
+    "function": "test_repeated_analysis"
+  },
+  {
+    "technique": "HTTP/filesystem-fault",
+    "expected": "Controlled 503 for PermissionError",
+    "risk": "Unreadable archive crashes whole endpoint",
+    "id": "J06",
+    "requirement": "Read-only archive access errors do not become unexplained HTTP 500",
+    "file": "tests/adversarial/test_adv_performance_security.py",
+    "function": "test_archive_permissions"
+  },
+  {
+    "technique": "HTTP/security/stress",
+    "expected": "No execution or corrupt response",
+    "id": "J07",
+    "requirement": "Extremely long untrusted names remain literal JSON data",
+    "file": "tests/adversarial/test_adv_performance_security.py",
+    "function": "test_long_untrusted_title"
+  },
+  {
+    "technique": "real browser DOM/security",
+    "expected": "No script execution; literal attack text visible",
+    "environment": "Edge/Playwright; all HTTP routes fulfilled in memory, not service E2E",
+    "id": "J08",
+    "requirement": "Untrusted titles render as text, not executable HTML",
+    "file": "tests/adversarial/test_adv_performance_security.py",
+    "function": "test_dashboard_xss"
+  },
+  {
+    "technique": "property/differential",
+    "priority": "P0",
+    "inputs": "200 generated unique top-N lists",
+    "expected": "Reference ratio and symmetry",
+    "id": "P01",
+    "requirement": "Jaccard is symmetric, bounded and agrees with independent set oracle",
+    "file": "tests/adversarial/test_adv_properties.py",
+    "function": "test_jaccard_properties"
+  },
+  {
+    "technique": "property/metamorphic",
+    "priority": "P0",
+    "inputs": "150 generated unique chart sets",
+    "expected": "Same Jaccard after identical record duplication",
+    "risk": "Duplicate-heavy ingestion invalidates complete charts",
+    "id": "P02",
+    "requirement": "Duplicating a valid snapshot preserves a country comparison",
+    "file": "tests/adversarial/test_adv_properties.py",
+    "function": "test_country_duplicate_invariance"
+  },
+  {
+    "technique": "property/metamorphic",
+    "priority": "P0",
+    "inputs": "200 generated action sequences",
+    "expected": "Same counts, independent reference rate, rates bounded",
+    "id": "P03",
+    "requirement": "Feedback survives duplicate replay and reordering for consistent IDs",
+    "file": "tests/adversarial/test_adv_properties.py",
+    "function": "test_feedback_replay"
+  },
+  {
+    "technique": "property/differential",
+    "inputs": "150 position lists",
+    "expected": "Independent math.fsum oracle",
+    "id": "P04",
+    "requirement": "Playlist placement follows logarithmic sum for arbitrary positive positions",
+    "file": "tests/adversarial/test_adv_properties.py",
+    "function": "test_placement_property"
+  },
+  {
+    "technique": "property/metamorphic",
+    "inputs": "200 Unicode text samples",
+    "expected": "Idempotent, canonical-normalization invariant",
+    "id": "P05",
+    "requirement": "Equivalent NFC/NFD/case forms keep normalization stable",
+    "file": "tests/adversarial/test_adv_properties.py",
+    "function": "test_unicode_normalization"
+  },
+  {
+    "technique": "real ES/API integration",
+    "priority": "P0",
+    "expected": "HTTP 200 and one known event",
+    "environment": "owned disposable local ES",
+    "id": "R01",
+    "requirement": "API reads real ES scroll pages and preserves stored events",
+    "file": "tests/adversarial/test_adv_real_services.py",
+    "function": "test_real_es_api"
+  },
+  {
+    "technique": "real ES/fault-injection",
+    "expected": "Bulk errors true with one valid and one invalid mapping",
+    "environment": "owned disposable local ES",
+    "id": "R02",
+    "requirement": "Real ES partial bulk failure has per-item error evidence",
+    "file": "tests/adversarial/test_adv_real_services.py",
+    "function": "test_real_es_partial_bulk"
+  },
+  {
+    "technique": "real Kafka integration",
+    "expected": "Producer acknowledgments and all 3 received records; no exactly-once assertion",
+    "environment": "owned disposable local Kafka",
+    "id": "R03",
+    "requirement": "Kafka real transport preserves IDs and explicitly exposes duplicate payloads",
+    "file": "tests/adversarial/test_adv_real_services.py",
+    "function": "test_real_kafka_duplicate_delivery"
+  },
+  {
+    "technique": "real Spark/checkpoint integration",
+    "priority": "P0",
+    "expected": "Exactly the two input rows after stop/restart",
+    "environment": "local PySpark + compatible Java; temporary files only",
+    "id": "R04",
+    "requirement": "Spark file-source restart resumes checkpoint without rereading committed input",
+    "file": "tests/adversarial/test_adv_real_services.py",
+    "function": "test_real_spark_checkpoint"
+  },
+  {
+    "technique": "cluster fault/E2E plan",
+    "priority": "P0",
+    "inputs": "Broker outage, consumer restart, watermark, corrupt checkpoint, HDFS outage, state pressure",
+    "expected": "NOT RUN until isolated full-stack harness exists; no production fault injection",
+    "environment": "disposable Kafka+Spark+HDFS+ES+API cluster",
+    "id": "R05",
+    "requirement": "Full-stack faults require a dedicated owned test cluster",
+    "file": "tests/adversarial/test_adv_real_services.py",
+    "function": "test_full_stack_requires_isolation"
+  },
+  {
+    "technique": "real Spark/regression",
+    "priority": "P0",
+    "expected": "Second microbatch completes without missing state delta",
+    "environment": "owned Spark container; actual callback; recommendation body stubbed to return early; not full application E2E",
+    "id": "R06",
+    "requirement": "Production foreachBatch early return preserves real Spark state across microbatches",
+    "file": "tests/adversarial/test_adv_real_services.py",
+    "function": "test_real_stateful_callback"
+  },
+  {
+    "technique": "real Spark process/environment regression",
+    "priority": "P0",
+    "expected": "Master starts until bounded timeout, no NumberFormatException",
+    "environment": "owned Spark container; Kubernetes-like env injection, not live Kubernetes",
+    "id": "R07",
+    "requirement": "Spark master startup tolerates the service-link environment generated by its Service",
+    "file": "tests/adversarial/test_adv_real_services.py",
+    "function": "test_real_master_service_link"
+  },
+  {
+    "technique": "state-transition/metamorphic",
+    "priority": "P0",
+    "inputs": "Three recrawls at 12:00/12:10/12:20 with same snapshot_id/source_period",
+    "expected": "Latest whole crawl only; periods1 and insufficient_data",
+    "id": "FX19",
+    "requirement": "Multiple crawls in one rounded snapshot bucket remain one source period",
+    "file": "tests/adversarial/test_adv_snapshot_regressions.py",
+    "function": "test_recrawls_in_same_snapshot_bucket"
+  },
+  {
+    "technique": "data-quality/state-transition",
+    "priority": "P0",
+    "inputs": "Same capture/track/period with ranks3,2,1",
+    "expected": "No rising state; at most one observation per period",
+    "id": "FX20",
+    "requirement": "Conflicting ranks within one capture cannot fabricate three source periods",
+    "file": "tests/adversarial/test_adv_snapshot_regressions.py",
+    "function": "test_conflicting_rank_one_period"
+  },
+  {
+    "technique": "mocked callback/resource-contract",
+    "priority": "P0",
+    "inputs": "Nonempty DataFrame double and early-return body",
+    "expected": "Callback invoked once with batch ID; unpersist called",
+    "risk": "Persisted microbatch resource leak",
+    "environment": "AST-executed production callback; actual state checkpoint checked separately in R06",
+    "id": "H01",
+    "requirement": "Early-returning recommendation callback releases persisted batch resources",
+    "file": "tests/adversarial/test_adv_stream_contracts.py",
+    "function": "test_stateful_batch_full_consumption"
+  },
+  {
+    "technique": "mocked callback/fault-injection",
+    "priority": "P0",
+    "expected": "Exception re-raised, unpersist called",
+    "environment": "unit contract only",
+    "id": "H02",
+    "requirement": "A failed micro-batch propagates failure and releases persisted data",
+    "file": "tests/adversarial/test_adv_stream_contracts.py",
+    "function": "test_callback_failure_cleanup"
+  },
+  {
+    "technique": "mocked connector/contract",
+    "expected": "es.mapping.id retained; failed save not swallowed",
+    "environment": "no real Elasticsearch/Spark",
+    "id": "H03",
+    "requirement": "ES connector writes use deterministic IDs and propagate save failure",
+    "file": "tests/adversarial/test_adv_stream_contracts.py",
+    "function": "test_es_write_contract"
+  },
+  {
+    "technique": "mocked partial failure",
+    "priority": "P0",
+    "expected": "No cleanup delete if write failed",
+    "environment": "unit contract only",
+    "id": "H04",
+    "requirement": "Failed ES write must not delete previous batch",
+    "file": "tests/adversarial/test_adv_stream_contracts.py",
+    "function": "test_es_replace_failed_write"
+  },
+  {
+    "technique": "mocked concurrency/state-transition",
+    "priority": "P0",
+    "inputs": "A writes run1, B publishes run2, A resumes stale cleanup",
+    "expected": "run2 remains available",
+    "risk": "Delete-by-query race empties the index",
+    "environment": "deterministic unit schedule, not ES integration",
+    "id": "H05",
+    "requirement": "Concurrent batch publication cannot erase the newer successful run",
+    "file": "tests/adversarial/test_adv_stream_contracts.py",
+    "function": "test_concurrent_es_replace"
+  },
+  {
+    "technique": "mocked IO/fault-injection",
+    "expected": "Permission/IO failure surfaced distinctly",
+    "risk": "Serving silently uses missing/stale views",
+    "environment": "mocked filesystem reader",
+    "id": "H06",
+    "requirement": "Corrupt/unreadable batch-view pointers are not silently treated as absent",
+    "file": "tests/adversarial/test_adv_stream_contracts.py",
+    "function": "test_view_corruption_visibility"
+  },
+  {
+    "technique": "security/path-traversal",
+    "expected": "No escaped file",
+    "environment": "temporary filesystem only",
+    "id": "J02",
+    "requirement": "Local ES output IDs cannot write outside their index directory",
+    "file": "tests/adversarial/test_adv_stream_contracts.py",
+    "function": "test_local_es_put_path"
+  },
+  {
+    "technique": "static AST contract",
+    "expected": "Stable Kafka-position ID and distinct insight checkpoint",
+    "environment": "source inspection, no exactly-once claim",
+    "id": "H07",
+    "requirement": "Insight raw IDs include topic/partition/offset and have their own checkpoint",
+    "file": "tests/adversarial/test_adv_stream_contracts.py",
+    "function": "test_insight_stream_identity"
+  }
+]

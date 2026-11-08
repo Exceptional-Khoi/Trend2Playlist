@@ -94,8 +94,10 @@ def main():
         try:
             rows = fetch_rss_charts(args.storefront, args.limit)
         except Exception as e:
-            print(f"Public RSS fetch failed ({e}), using built-in verified sample...")
+            print(f"Public RSS fetch failed ({e}), emitting explicitly synthetic sample...")
             rows = get_fallback_sample(args.storefront)
+            for row in rows:
+                row.update(synthetic=True, provenance='synthetic')
 
     write_jsonl(f"apple_music_chart_{args.storefront}.jsonl", rows)
 
