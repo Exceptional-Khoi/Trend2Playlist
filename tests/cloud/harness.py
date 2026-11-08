@@ -24,6 +24,10 @@ PATHS={'Namespace':'/api/v1/namespaces','ConfigMap':'/api/v1/namespaces/{ns}/con
  'NetworkPolicy':'/apis/networking.k8s.io/v1/namespaces/{ns}/networkpolicies'}
 
 
+class ObservationUnavailable(RuntimeError):
+    """Transient read failure; never a malformed committed-file exemption."""
+
+
 def process(args,timeout=45,input=None):
     p=subprocess.run(args,input=input,capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=timeout)
     if p.returncode:raise RuntimeError(sanitize(p.stderr or p.stdout)[-3000:])
@@ -263,7 +267,7 @@ class Harness:
         self.save('stack_state.json',{'scope':self.scope,'namespace_uid':self.namespace_uid,'agent_url':self.agent_url,
             'source_root':str(self.source),'proxy_url':self.proxy,'source_version':self.scope.get('source_version')})
 
-    def rpc(self,op,args=None,timeout=60):
+    def rpc(self,op,args=None,timeout=60,read_retries=3):
         self.guard()
         request=urllib.request.Request(self.agent_url+'/invoke',method='POST',
             data=json.dumps({'op':op,'args':args or {}},ensure_ascii=False).encode(),headers={'Content-Type':'application/json'})
@@ -274,7 +278,7 @@ class Harness:
             value=args or {};path=urllib.parse.urlparse(value.get('url','')).path
             method=value.get('method','GET')
             read_only=method=='GET' or (method=='POST' and path.endswith(('/_search','/_mget')))
-        attempts=3 if read_only else 1
+        attempts=min(3,max(1,read_retries)) if read_only else 1
         for attempt in range(attempts):
             try:
                 with urllib.request.urlopen(request,timeout=timeout) as response:data=json.load(response)
@@ -283,11 +287,15 @@ class Harness:
                 detail=sanitize(exc.read().decode())[:1200]
                 try:transient=json.loads(detail).get('error') in ('TimeoutError','URLError','ConnectionError')
                 except (ValueError,AttributeError):transient=False
+                if transient and read_only and attempt+1==attempts:
+                    raise ObservationUnavailable('Observer '+op+' temporarily unavailable: '+detail) from exc
                 if not transient or attempt+1==attempts:
                     raise RuntimeError('Observer '+op+' failed: '+detail) from exc
             except (urllib.error.URLError,TimeoutError) as exc:
                 detail=sanitize(exc)
-                if attempt+1==attempts:raise RuntimeError('Observer '+op+' failed: '+detail) from exc
+                if attempt+1==attempts:
+                    error=ObservationUnavailable if read_only else RuntimeError
+                    raise error('Observer '+op+' failed: '+detail) from exc
             self.trace('observer_retry','RETRY',{'op':op,'attempt':attempt+1,'reason':detail})
             self.guard();threading.Event().wait(.5*(attempt+1))
 
@@ -309,8 +317,15 @@ class Harness:
 
     def await_records(self,acks,timeout=150):
         started=time.monotonic();needed={(r['topic'],r['partition'],r['offset']) for r in acks}
-        hdfs=poll(lambda:self.rpc('hdfs_records',timeout=60),
-            lambda data:needed<={(r['topic'],r['partition'],r['offset']) for r in data['rows']},timeout=timeout,interval=3,guard=self.guard)
+        def observe_hdfs():
+            remaining=started+timeout-time.monotonic()
+            if remaining<=0:return None
+            try:return self.rpc('hdfs_records',timeout=min(30,remaining),read_retries=1)
+            except ObservationUnavailable as exc:
+                self.trace('observer_eventual_retry','RETRY',{'op':'hdfs_records','reason':str(exc)})
+                return None
+        hdfs=poll(observe_hdfs,
+            lambda data:data is not None and needed<={(r['topic'],r['partition'],r['offset']) for r in data['rows']},timeout=timeout,interval=3,guard=self.guard)
         actual={(r['topic'],r['partition'],r['offset']):r for r in hdfs['rows']}
         for a in acks:assert actual[(a['topic'],a['partition'],a['offset'])]['value']==a['value']
         self.trace('hdfs','PASS',{'rows':[actual[k] for k in sorted(needed)],'wait_seconds':time.monotonic()-started})

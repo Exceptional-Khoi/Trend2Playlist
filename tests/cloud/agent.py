@@ -78,7 +78,16 @@ def hdfs(path,op='LISTSTATUS'):
                     last=exc
                     # Match Hadoop's WebHDFS client: request a different replica
                     # instead of following the same stale DataNode redirect again.
-                    with HDFS_LOCK:BAD_DATANODES[parsed.netloc]=time.monotonic()+20
+                    # NameNode excludes by registered transfer IP/port. Redirect
+                    # DNS/HTTP endpoints are not equivalent, especially after
+                    # a StatefulSet pod receives a new IP during replacement.
+                    blocks=hdfs(path,'GET_BLOCK_LOCATIONS')['LocatedBlocks']['locatedBlocks']
+                    addresses={str(node['ipAddr'])+':'+str(node['xferPort'])
+                        for block in blocks for node in block['locations']
+                        if host.rstrip('.').lower() in (node['hostName'].rstrip('.').lower(),node['ipAddr'])}
+                    if not addresses:raise ConnectionError('Failed DataNode absent from current block locations') from exc
+                    with HDFS_LOCK:
+                        for address in addresses:BAD_DATANODES[address]=time.monotonic()+20
                     continue
             else:value=response.content
             # Revalidate NameNode file version: caching must not hide a regenerated

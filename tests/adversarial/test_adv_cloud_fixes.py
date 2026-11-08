@@ -153,15 +153,21 @@ def test_webhdfs_observer_fails_over_and_revalidates_query_metadata(source_root,
     import time
     import urllib.parse
     version=[1];content=[b'old-id'];calls=[]
-    def stat(*args,**kwargs):return io.BytesIO(json.dumps({'FileStatus':{'modificationTime':version[0],'length':6}}).encode())
-    monkeypatch.setattr(urllib.request,'urlopen',stat)
     dead='hdfs-datanode-0.hdfs-datanode.qa.svc.cluster.local:9864'
     good='hdfs-datanode-1.hdfs-datanode.qa.svc.cluster.local:9864'
+    def stat(url,**kwargs):
+        value={'FileStatus':{'modificationTime':version[0],'length':6}}
+        if 'GET_BLOCK_LOCATIONS' in url:
+            value={'LocatedBlocks':{'locatedBlocks':[{'locations':[
+                {'hostName':dead.split(':')[0],'ipAddr':'10.0.0.10','xferPort':9866},
+                {'hostName':good.split(':')[0],'ipAddr':'10.0.0.11','xferPort':9866}]}]}}
+        return io.BytesIO(json.dumps(value).encode())
+    monkeypatch.setattr(urllib.request,'urlopen',stat)
     def get(url,**kwargs):
         calls.append(url)
         if 'hdfs-namenode:9870' in url:
             query=urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
-            host=good if dead in query.get('excludedatanodes',[''])[0] else dead
+            host=good if '10.0.0.10:9866' in query.get('excludedatanodes',['']) else dead
             return SimpleNamespace(status_code=307,headers={'Location':'http://'+host+'/webhdfs/v1/qa/run/checkpoints/metadata?op=OPEN'})
         if dead in url:raise requests.exceptions.ConnectTimeout('restarted DataNode')
         return SimpleNamespace(status_code=200,content=content[0])
@@ -172,6 +178,9 @@ def test_webhdfs_observer_fails_over_and_revalidates_query_metadata(source_root,
     path='/qa/run/checkpoints/metadata'
     assert fn(path,'OPEN')==b'old-id'
     assert any('excludedatanodes=' in url for url in calls)
+    exclusions=[urllib.parse.parse_qs(urllib.parse.urlparse(url).query)['excludedatanodes'][0]
+        for url in calls if 'excludedatanodes=' in url]
+    assert exclusions==['10.0.0.10:9866'],'NameNode matches the registered transfer address, not redirect DNS/HTTP port'
     version[0]=2;content[0]=b'new-id'
     assert fn(path,'OPEN')==b'new-id','Cache must not hide changed checkpoint identity'
 
@@ -340,3 +349,38 @@ def test_restart_does_not_accept_other_preexisting_ready_replica(source_root,tmp
     h.restart('hdfs-datanode')
     assert deleted==[('Pod','dn-0')]
     assert traces[-1][2]['new_uid']=='new'
+
+
+@pytest.mark.parametrize('transient',[True,False])
+def test_hdfs_eventual_poll_retries_transport_but_propagates_committed_corruption(source_root,tmp_path,monkeypatch,transient):
+    monkeypatch.syspath_prepend(str(source_root/'tests'))
+    from cloud import harness
+    scope={'project':'qa-example-project','cluster':'music','location':'example-zone',
+        'context':'gke_qa-example-project_example-zone_music','namespace':'music-e2e-20261108-observation',
+        'run_id':'20261108-observation','approved_existing_nodes':True}
+    h=harness.Harness(scope,source_root,tmp_path);h.guard=lambda **kw:None;traces=[];h.trace=lambda *a:traces.append(a)
+    ack={'topic':'music.events','partition':0,'offset':0,'value':'{}','doc_id':'music.events:0:0'}
+    reads=[]
+    def rpc(op,**kw):
+        if op=='checkpoints':return {name:{'offset_log':[{'music.events':{'0':1}}]} for name in ['ingest','insight-raw']}
+        assert op=='hdfs_records';reads.append(kw)
+        if len(reads)==1:
+            error=harness.ObservationUnavailable if transient else RuntimeError
+            raise error('temporary transport' if transient else 'Committed Parquet payload invalid')
+        return {'rows':[ack]}
+    h.rpc=rpc
+    h.http=lambda *a,**kw:{'status':200,'body':{'docs':[{'found':True,'_source':{'value':'{}'}}]}}
+    def poll(fn,predicate,**kw):
+        for _ in range(2):
+            value=fn()
+            if predicate(value):return value
+        raise AssertionError('Fixture did not recover within deterministic polling steps')
+    monkeypatch.setattr(harness,'poll',poll)
+    if transient:
+        result=h.await_records([ack],timeout=150)
+        assert result['hdfs']['rows']==[ack] and len(reads)==2
+        assert all(r['timeout']<=30 and r['read_retries']==1 for r in reads)
+        assert any(t[0]=='observer_eventual_retry' for t in traces)
+    else:
+        with pytest.raises(RuntimeError,match='Committed Parquet'):h.await_records([ack])
+        assert len(reads)==1 and not traces
