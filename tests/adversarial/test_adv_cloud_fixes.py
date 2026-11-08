@@ -253,6 +253,42 @@ def test_observer_latest_compact_log_applies_deletes_and_uri_decoding(source_roo
     assert [r['path'].rsplit('/',1)[-1] for r in result['files']]==['b.parquet','đêm🎵.parquet']
 
 
+def test_hdfs_observer_preserves_committed_offsets_ignoring_empty_orphan(source_root,monkeypatch):
+    import io
+    import sys
+    import types
+    import urllib.parse
+    base='/qa/run';root=base+'/datalake/raw';partition=root+'/topic=music.events/dt=2026-11-08'
+    valid=partition+'/b.parquet';orphan=partition+'/a.parquet';payload=b'PAR1xxxxPAR1';opened=[]
+    row={'topic':'music.events','partition':0,'offset':7,'value':'{}'}
+    parent=types.ModuleType('pyarrow');pq=types.ModuleType('pyarrow.parquet');parent.parquet=pq
+    def read_table(data):
+        if data.getvalue()!=payload:raise ValueError('Uncommitted empty Parquet reached codec')
+        return SimpleNamespace(to_pylist=lambda:[row])
+    pq.read_table=read_table
+    monkeypatch.setitem(sys.modules,'pyarrow',parent);monkeypatch.setitem(sys.modules,'pyarrow.parquet',pq)
+    def directory(names):return {'FileStatuses':{'FileStatus':names}}
+    def hdfs(path,op='LISTSTATUS'):
+        if op=='OPEN':
+            opened.append(path)
+            if path==root+'/_spark_metadata/0':
+                return ('v1\n'+json.dumps({'path':'hdfs://nn:8020'+valid,'size':len(payload),'isDir':False,'action':'add'})).encode()
+            return payload if path==valid else b''
+        if path==root+'/_spark_metadata':return directory([{'pathSuffix':'0'}])
+        if path==root:return directory([{'pathSuffix':'topic=music.events','type':'DIRECTORY'}])
+        if path==root+'/topic=music.events':return directory([{'pathSuffix':'dt=2026-11-08','type':'DIRECTORY'}])
+        assert path==partition
+        return directory([{'pathSuffix':'a.parquet','type':'FILE','length':0},
+                          {'pathSuffix':'b.parquet','type':'FILE','length':len(payload)}])
+    namespace={'BASE':base,'hdfs':hdfs,'json':json,'urllib':SimpleNamespace(parse=urllib.parse)}
+    committed=isolated_function(source_root/'tests/cloud/agent.py','committed_parquet_files',namespace)
+    fn=isolated_function(source_root/'tests/cloud/agent.py','hdfs_records',
+        dict(namespace,committed_parquet_files=committed,PARQUET_CACHE={},io=io))
+    result=fn()
+    assert [(r['partition'],r['offset']) for r in result['rows']]==[(0,7)]
+    assert result['files']==1 and orphan not in opened and valid in opened
+
+
 @pytest.mark.parametrize('path',['hdfs://nn/qa/other/file.parquet','hdfs://nn/qa/run/datalake/raw/../file.parquet'])
 def test_observer_rejects_committed_paths_outside_own_dataset(source_root,path):
     import urllib.parse
