@@ -44,6 +44,8 @@ WebHDFS exclusions use the registered transfer IP/port from `GET_BLOCK_LOCATIONS
 
 NameNode reports exhausted request-local exclusions as HTTP403 with `IOException: No active nodes contain this block`. That exact response clears the temporary client exclusion set and allows a bounded reprobe; `AccessControlException` and other403 responses still fail. A read-only probe against a live NameNode confirmed this negative-response contract without writing data or changing replica availability or permissions.
 
+DataNode recovery also requires a fresh-process storage audit: pre-fault byte/row caches could otherwise hide unreadable old blocks. `tests/cloud/storage_audit.py` starts a bounded observer process with empty caches and checks acknowledged topic/partition/offset identities and exact payloads. Missing, duplicate, modified or cached records fail the postcondition. Pod readiness and a count assembled from pre-fault cache alone are not storage-durability evidence.
+
 ## Verification and rollout
 
 Keep original failing evidence. Run the default pytest suite, then opt-in isolated Cloud E2E on approved existing nodes. Changing code does not turn historical Job failures into successes: trigger a real validation batch and check publication, logs, worker stability, checkpoints and final API responses. Existing namespace changes require its owner's explicit authorization. Do not publish runtime logs, dataset or cluster metadata along with source code without separate approval.

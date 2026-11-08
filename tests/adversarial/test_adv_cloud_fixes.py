@@ -421,3 +421,19 @@ def test_webhdfs_selection_403_is_transient_but_authorization_403_remains_failur
     else:
         with pytest.raises(urllib.error.HTTPError) as error:fn('/qa/run/checkpoints/id','OPEN')
         assert error.value.code==403 and bad
+
+
+def test_fresh_storage_audit_rejects_cached_missing_duplicate_and_modified_records(source_root,monkeypatch):
+    import copy
+    monkeypatch.syspath_prepend(str(source_root/'tests'))
+    from cloud.storage_audit import assert_fresh_acks
+    ack={'topic':'music.events','partition':0,'offset':7,'value':'{"event_id":"e1"}'}
+    valid={'observer':'fresh-process','rows':[dict(ack)]}
+    assert_fresh_acks([ack],valid)
+    invalid=[]
+    cached=copy.deepcopy(valid);cached['observer']='cached';invalid.append(cached)
+    missing=copy.deepcopy(valid);missing['rows']=[];invalid.append(missing)
+    duplicate=copy.deepcopy(valid);duplicate['rows'].append(dict(ack));invalid.append(duplicate)
+    modified=copy.deepcopy(valid);modified['rows'][0]['value']='{"event_id":"different"}';invalid.append(modified)
+    for result in invalid:
+        with pytest.raises(AssertionError):assert_fresh_acks([ack],result)

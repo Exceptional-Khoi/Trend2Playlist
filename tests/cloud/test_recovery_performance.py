@@ -8,6 +8,7 @@ import pytest
 from .cases import case
 from .safety import poll
 from .test_e2e_pipeline import feedback,hits
+from .storage_audit import FRESH_HDFS_CODE,assert_fresh_acks
 
 
 @case('CR-001','Driver restart resumes same checkpoint query without raw duplication',200,kind='reliability',destructive=True,timeout=500)
@@ -33,6 +34,10 @@ def test_component_restart(stack,dataset,app):
     after=dataset.publish([dataset.event('after')],'music.events');stack.await_records(before+inflight+after,timeout=240)
     assert feedback(dataset,dataset.track(),3)['play']==3
     assert stack.http('/api/health')['status']==200
+    if app=='hdfs-datanode':
+        fresh=json.loads(stack.exec('qa-agent',['python','-u','-c',FRESH_HDFS_CODE],timeout=120))
+        assert_fresh_acks(before+inflight+after,fresh)
+        stack.trace('fresh_storage_after_fault','PASS',fresh)
 
 
 @case('CR-003','Real ES unavailable then restored with checkpoint retry recovery',220,kind='reliability',destructive=True,timeout=500)
