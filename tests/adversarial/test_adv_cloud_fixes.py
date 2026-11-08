@@ -217,3 +217,90 @@ def test_readonly_client_accepts_valid_large_reply_but_keeps_finite_budget(sourc
         result=h.read('/api/insights/lifecycle');assert result['status']==200 and len(result['body']['value'])==size
     else:
         with pytest.raises(SafetyError,match='budget exceeded'):h.read('/api/insights/lifecycle')
+
+
+def test_observer_reads_only_committed_parquet_not_orphan_directory(source_root):
+    import urllib.parse
+    base='/qa/run';root=base+'/datalake/raw';path=root+'/topic=music.events/dt=2026-11-08/a.parquet'
+    calls=[]
+    def hdfs(path_,op='LISTSTATUS'):
+        calls.append((path_,op))
+        if path_==root+'/_spark_metadata':return {'FileStatuses':{'FileStatus':[{'pathSuffix':'0'}]}}
+        assert path_==root+'/_spark_metadata/0', 'Observer must not scan uncommitted physical files'
+        return ('v1\n'+json.dumps({'path':'hdfs://hdfs-namenode:8020'+path,'size':12,'isDir':False,'action':'add'})).encode()
+    fn=isolated_function(source_root/'tests/cloud/agent.py','committed_parquet_files',
+        {'BASE':base,'hdfs':hdfs,'json':json,'urllib':SimpleNamespace(parse=urllib.parse)})
+    result=fn()
+    assert [f['path'] for f in result['files']]==[path] and result['logs']==['0']
+    assert len(calls)==2
+
+
+def test_observer_latest_compact_log_applies_deletes_and_uri_decoding(source_root):
+    import urllib.parse
+    base='/qa/run';root=base+'/datalake/raw'
+    def row(name,action='add'):
+        path=root+'/topic=music.events/dt=2026-11-08/'+name+'.parquet'
+        return {'path':'hdfs://hdfs-namenode:8020'+urllib.parse.quote(path),'size':12,'isDir':False,'action':action}
+    logs={'9.compact':[row('a'),row('b')],'10':[row('a','delete'),row('đêm🎵')]}
+    def hdfs(path,op='LISTSTATUS'):
+        if op=='LISTSTATUS':return {'FileStatuses':{'FileStatus':[{'pathSuffix':n} for n in ['10','0','9.compact','.temporary']]}}
+        name=path.rsplit('/',1)[-1];assert name!='0', 'Old logs must not resurrect deleted files after compact snapshot'
+        return ('v1\n'+'\n'.join(json.dumps(r) for r in logs[name])).encode()
+    fn=isolated_function(source_root/'tests/cloud/agent.py','committed_parquet_files',
+        {'BASE':base,'hdfs':hdfs,'json':json,'urllib':SimpleNamespace(parse=urllib.parse)})
+    result=fn()
+    assert result['logs']==['9.compact','10']
+    assert [r['path'].rsplit('/',1)[-1] for r in result['files']]==['b.parquet','đêm🎵.parquet']
+
+
+@pytest.mark.parametrize('path',['hdfs://nn/qa/other/file.parquet','hdfs://nn/qa/run/datalake/raw/../file.parquet'])
+def test_observer_rejects_committed_paths_outside_own_dataset(source_root,path):
+    import urllib.parse
+    def hdfs(p,op='LISTSTATUS'):
+        if op=='LISTSTATUS':return {'FileStatuses':{'FileStatus':[{'pathSuffix':'0'}]}}
+        return ('v1\n'+json.dumps({'path':path,'size':12,'isDir':False,'action':'add'})).encode()
+    fn=isolated_function(source_root/'tests/cloud/agent.py','committed_parquet_files',
+        {'BASE':'/qa/run','hdfs':hdfs,'json':json,'urllib':SimpleNamespace(parse=urllib.parse)})
+    with pytest.raises(ValueError,match='outside owned'):fn()
+
+
+@pytest.mark.parametrize('payload',[b'',b'PAR1bad',b'badbytes'])
+def test_committed_empty_truncated_or_corrupt_parquet_never_silently_skipped(source_root,monkeypatch,payload):
+    import io
+    import sys
+    import types
+    parent=types.ModuleType('pyarrow');pq=types.ModuleType('pyarrow.parquet');parent.parquet=pq
+    def corrupt(data):raise ValueError('Invalid Parquet footer')
+    pq.read_table=corrupt
+    monkeypatch.setitem(sys.modules,'pyarrow',parent);monkeypatch.setitem(sys.modules,'pyarrow.parquet',pq)
+    path='/qa/run/datalake/raw/topic=music.events/dt=2026-11-08/bad.parquet'
+    fn=isolated_function(source_root/'tests/cloud/agent.py','hdfs_records',
+        {'committed_parquet_files':lambda:{'files':[{'path':path,'size':8}],'logs':['0']},
+         'hdfs':lambda *a:payload,'PARQUET_CACHE':{},'io':io})
+    with pytest.raises(ValueError,match='Committed Parquet payload invalid|Invalid Parquet footer'):fn()
+
+
+def test_restart_does_not_accept_other_preexisting_ready_replica(source_root,tmp_path,monkeypatch):
+    import copy
+    monkeypatch.syspath_prepend(str(source_root/'tests'))
+    from cloud import harness
+    from cloud.stack import LABEL
+    scope={'project':'qa-example-project','cluster':'music','location':'example-zone',
+        'context':'gke_qa-example-project_example-zone_music','namespace':'music-e2e-20261108-restart',
+        'run_id':'20261108-restart','approved_existing_nodes':True}
+    h=harness.Harness(scope,source_root,tmp_path)
+    def pod(uid,name,ready=True):return {'metadata':{'uid':uid,'name':name,'namespace':h.namespace,
+        'labels':{'app':'hdfs-datanode',LABEL:h.run_id}},'status':{'containerStatuses':[{'ready':ready}]}}
+    old=pod('old','dn-0');survivor=pod('survivor','dn-1');new=pod('new','dn-0')
+    booting=copy.deepcopy(new);booting['status']['containerStatuses'][0]['ready']=False
+    snapshots=iter([[old,survivor],[survivor],[survivor,booting],[survivor,new]])
+    h.list=lambda kind:next(snapshots);h.pod=lambda app:old;h.guard=lambda **kw:None
+    deleted=[];traces=[];h.delete=lambda kind,name:deleted.append((kind,name));h.trace=lambda *a:traces.append(a)
+    def poll(fn,predicate,**kw):
+        assert fn() is None, 'Surviving replica is not the replacement'
+        assert fn() is None, 'A newly created unready pod is not recovered'
+        result=fn();assert predicate(result);return result
+    monkeypatch.setattr(harness,'poll',poll)
+    h.restart('hdfs-datanode')
+    assert deleted==[('Pod','dn-0')]
+    assert traces[-1][2]['new_uid']=='new'

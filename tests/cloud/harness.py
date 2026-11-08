@@ -335,14 +335,20 @@ class Harness:
 
     def restart(self,app):
         self.guard(force=True);pod=self.pod(app);before={'uid':pod['metadata']['uid'],'name':pod['metadata']['name']}
+        original_uids={p['metadata']['uid'] for p in self.list('Pod') if p['metadata'].get('labels',{}).get('app')==app}
         self.trace('fault_before','OBSERVED',{'app':app,**before})
         start=time.monotonic();self.delete('Pod',pod['metadata']['name'])
         def replacement():
-            try:return self.pod(app)
-            except Blocked:return None
-        poll(replacement,lambda p:p is not None and p['metadata']['uid']!=before['uid'] and all(c.get('ready') for c in p['status'].get('containerStatuses',[]))
+            values=[p for p in self.list('Pod') if p['metadata'].get('labels',{}).get('app')==app
+                    and p['metadata']['uid'] not in original_uids and not p['metadata'].get('deletionTimestamp')]
+            for value in values:
+                owned(value,self.run_id,self.namespace)
+                if value.get('status',{}).get('containerStatuses') and all(c.get('ready') for c in value['status']['containerStatuses']):
+                    return value
+            return None
+        after=poll(replacement,lambda p:p is not None and all(c.get('ready') for c in p['status'].get('containerStatuses',[]))
              and bool(p['status'].get('containerStatuses')),timeout=360,interval=3,guard=self.guard)
-        after=self.pod(app);seconds=time.monotonic()-start
+        seconds=time.monotonic()-start
         self.trace('recovery','MEASURED',{'app':app,'new_uid':after['metadata']['uid'],'pod_ready_seconds':seconds,
                                        'definition':'pod readiness; data/API recovery checked separately'})
         if app=='qa-agent':raise SafetyError('Observer restart requires a new owned port-forward')

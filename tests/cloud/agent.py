@@ -116,26 +116,51 @@ def checkpoints():
     return result
 
 
+def committed_parquet_files():
+    """Match Spark's FileStreamSinkLog, including compact snapshots and deletes."""
+    import re
+    root=BASE+'/datalake/raw';metadata=root+'/_spark_metadata'
+    try:entries=hdfs(metadata)['FileStatuses']['FileStatus']
+    except urllib.error.HTTPError as exc:
+        if exc.code==404:return {'files':[],'logs':[]}
+        raise
+    logs={e['pathSuffix'] for e in entries if re.fullmatch(r'\d+(?:\.compact)?',e['pathSuffix'])}
+    compact=max((int(name.split('.')[0]) for name in logs if name.endswith('.compact')),default=-1)
+    selected=([str(compact)+'.compact'] if compact>=0 else [])+sorted(
+        [name for name in logs if name.isdigit() and int(name)>compact],key=int)
+    if len(selected)>1000:raise ValueError('Bounded HDFS commit log scan exceeded')
+    files={}
+    for name in selected:
+        try:lines=hdfs(metadata+'/'+name,'OPEN').decode().splitlines()
+        except urllib.error.HTTPError as exc:
+            if exc.code==404:raise TimeoutError('Commit log compacted during observation') from exc
+            raise
+        if not lines or lines[0]!='v1':raise ValueError('Unsupported Spark file sink log version')
+        for line in lines[1:]:
+            record=json.loads(line);parsed=urllib.parse.urlparse(record['path'])
+            path=urllib.parse.unquote(parsed.path)
+            if parsed.scheme not in ('','hdfs') or not path.startswith(root+'/') or '..' in path.split('/'):
+                raise ValueError('Committed path outside owned raw dataset')
+            if record['action']=='delete':files.pop(path,None)
+            elif record['action']=='add':
+                if not record.get('isDir'):
+                    if not path.endswith('.parquet'):raise ValueError('Non-Parquet committed raw file')
+                    files[path]=dict(record,path=path)
+            else:raise ValueError('Unsupported Spark file sink action')
+    return {'files':[files[path] for path in sorted(files)],'logs':selected}
+
+
 def hdfs_records():
     import pyarrow.parquet as pq
-    pending=[BASE+'/datalake/raw'];files=[];total=0;rows=[]
-    while pending:
-        path=pending.pop()
-        try:entries=hdfs(path)['FileStatuses']['FileStatus']
-        except urllib.error.HTTPError as exc:
-            if exc.code==404:continue
-            raise
-        for entry in entries:
-            name=entry['pathSuffix']
-            if name.startswith('_') or name.startswith('.'):continue
-            child=path+'/'+name
-            if entry['type']=='DIRECTORY':pending.append(child)
-            elif name.endswith('.parquet'):
-                files.append(child);total+=entry['length']
+    committed=committed_parquet_files();files=committed['files'];total=sum(f['size'] for f in files);rows=[]
     if len(files)>500 or total>16*1024*1024:raise ValueError('Bounded HDFS scan exceeded')
-    for path in sorted(files):
+    for entry in files:
+        path=entry['path']
         if path not in PARQUET_CACHE:
-            PARQUET_CACHE[path]=pq.read_table(io.BytesIO(hdfs(path,'OPEN'))).to_pylist()
+            value=hdfs(path,'OPEN')
+            if len(value)<8 or len(value)!=entry['size']:
+                raise ValueError('Committed Parquet payload invalid: '+path+' expected='+str(entry['size'])+' actual='+str(len(value)))
+            PARQUET_CACHE[path]=pq.read_table(io.BytesIO(value)).to_pylist()
         for source_row in PARQUET_CACHE[path]:
             row=dict(source_row)
             row['topic']=next(p[6:] for p in path.split('/') if p.startswith('topic='))
@@ -147,7 +172,7 @@ def hdfs_records():
                 row['kafka_ts_ms']=int(stamp.timestamp()*1000);row.pop('kafka_ts',None)
             rows.append(row)
             if len(rows)>5000:raise ValueError('HDFS row budget exceeded')
-    return {'rows':rows,'files':len(files),'bytes':total}
+    return {'rows':rows,'files':len(files),'bytes':total,'commit_logs':committed['logs']}
 
 
 def producer():

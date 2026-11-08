@@ -38,6 +38,8 @@ The workload guard recognizes healthy HPA scale-down only when the original HPA 
 
 An isolated batch recheck also reached the unchanged95% node CPU abort threshold. The test profile now uses smaller CPU caps for Kafka/HDFS, Elasticsearch, worker and drivers so the existing workload retains more headroom. This changes the test resource envelope, not the pipeline oracle or application code. Performance results must include that envelope; they are not full-profile capacity benchmarks.
 
+The HDFS observer reads the file sink's `_spark_metadata` commit log, including compact snapshots and delete actions, matching [Spark's file sink visibility rules](https://raw.githubusercontent.com/apache/spark/v3.5.7/sql/core/src/main/scala/org/apache/spark/sql/execution/streaming/FileStreamSinkLog.scala). A physical directory scan can include in-progress or abandoned part files after a fault. Files absent from the commit log are not counted as committed records. A committed empty/truncated/corrupt Parquet file still fails; it is never silently skipped. The restart observer also requires a newly created Ready pod UID, excluding every replica that existed before fault injection; another healthy replica is not proof that the deleted pod recovered.
+
 ## Verification and rollout
 
 Keep original failing evidence. Run the default pytest suite, then opt-in isolated Cloud E2E on approved existing nodes. Changing code does not turn historical Job failures into successes: trigger a real validation batch and check publication, logs, worker stability, checkpoints and final API responses. Existing namespace changes require its owner's explicit authorization. Do not publish runtime logs, dataset or cluster metadata along with source code without separate approval.
