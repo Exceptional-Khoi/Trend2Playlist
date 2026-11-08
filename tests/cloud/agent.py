@@ -21,6 +21,7 @@ TOPICS=['music.charts','music.playlists','music.country-charts','music.events','
 FIXTURE={'feed':{'results':[]}}
 SLOTS=threading.BoundedSemaphore(4)
 PARQUET_CACHE={}
+HDFS_CACHE={};HDFS_CACHE_BYTES=0;BAD_DATANODES={};HDFS_LOCK=threading.Lock()
 
 
 def http(method,url,body=None,timeout=20):
@@ -40,8 +41,55 @@ def http(method,url,body=None,timeout=20):
 
 
 def hdfs(path,op='LISTSTATUS'):
+    global HDFS_CACHE_BYTES
     if not path.startswith(BASE+'/') or '..' in path.split('/'):raise ValueError('HDFS path outside this test run')
     url='http://hdfs-namenode:9870/webhdfs/v1'+urllib.parse.quote(path,safe='/')+'?op='+op
+    if op=='OPEN':
+        import requests
+        import ipaddress
+        status=hdfs(path,'GETFILESTATUS')['FileStatus']
+        version=(status['modificationTime'],status['length'])
+        with HDFS_LOCK:
+            cached=HDFS_CACHE.get(path)
+            if cached and cached[0]==version:return cached[1]
+        last=None
+        for attempt in range(3):
+            with HDFS_LOCK:
+                excluded=[host for host,until in BAD_DATANODES.items() if until>time.monotonic()]
+            target=url+('&excludedatanodes='+urllib.parse.quote(','.join(excluded),safe='') if excluded else '')
+            response=requests.get(target,allow_redirects=False,timeout=(3,10))
+            if response.status_code>=400:
+                if excluded and response.status_code>=500 and attempt<2:
+                    with HDFS_LOCK:BAD_DATANODES.clear()
+                    continue
+                raise urllib.error.HTTPError(target,response.status_code,'WebHDFS read failed',{},io.BytesIO(response.content))
+            location=response.headers.get('Location') if response.status_code in (302,307) else None
+            if location:
+                parsed=urllib.parse.urlparse(location);host=parsed.hostname or ''
+                try:private_ip=ipaddress.ip_address(host).is_private
+                except ValueError:private_ip=False
+                if parsed.scheme!='http' or parsed.port!=9864 or not (host.endswith('.'+NS+'.svc.cluster.local') or private_ip):
+                    raise ValueError('Unexpected DataNode redirect outside owned HDFS')
+                try:
+                    data=requests.get(location,timeout=(3,10))
+                    if data.status_code>=400:raise OSError('DataNode read status '+str(data.status_code))
+                    value=data.content
+                except (requests.exceptions.RequestException,OSError) as exc:
+                    last=exc
+                    # Match Hadoop's WebHDFS client: request a different replica
+                    # instead of following the same stale DataNode redirect again.
+                    with HDFS_LOCK:BAD_DATANODES[parsed.netloc]=time.monotonic()+20
+                    continue
+            else:value=response.content
+            # Revalidate NameNode file version: caching must not hide a regenerated
+            # query ID or a changed/corrupted checkpoint during recovery testing.
+            with HDFS_LOCK:
+                previous=HDFS_CACHE.get(path)
+                previous_size=len(previous[1]) if previous else 0
+                if len(value)<128*1024 and HDFS_CACHE_BYTES-previous_size+len(value)<=8*1024*1024:
+                    HDFS_CACHE[path]=(version,value);HDFS_CACHE_BYTES+=len(value)-previous_size
+            return value
+        raise TimeoutError('No readable HDFS replica after bounded failover: '+str(last))
     with urllib.request.urlopen(url,timeout=15) as response:
         value=response.read()
     return value if op=='OPEN' else json.loads(value)
@@ -50,7 +98,7 @@ def hdfs(path,op='LISTSTATUS'):
 def checkpoints():
     result={}
     for name in ['insight-raw','ingest','plays','mentions','charts','recommend']:
-        root=BASE+'/checkpoints/'+name
+        root=BASE+'/checkpoints/'+('plays-v2' if name=='plays' else name)
         try:
             files=hdfs(root+'/commits')['FileStatuses']['FileStatus']
             ids=[int(f['pathSuffix']) for f in files if f['pathSuffix'].isdigit()]

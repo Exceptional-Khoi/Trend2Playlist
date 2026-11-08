@@ -92,11 +92,24 @@ class Harness:
     def _baseline(self):
         nodes=self.request('GET','/api/v1/nodes')['items']
         pods=self.request('GET','/api/v1/namespaces/music/pods')['items']
+        controllers={}
+        for kind,resource in [('Deployment','deployments'),('StatefulSet','statefulsets')]:
+            for obj in self.request('GET','/apis/apps/v1/namespaces/music/'+resource)['items']:
+                controllers[kind+'/'+obj['metadata']['name']]={'uid':obj['metadata']['uid'],
+                    'template_hash':sha256(obj['spec']['template']),'desired':obj['spec'].get('replicas',1),
+                    'ready':obj.get('status',{}).get('readyReplicas',0)}
+        hpas={}
+        for obj in self.request('GET','/apis/autoscaling/v2/namespaces/music/horizontalpodautoscalers')['items']:
+            ref=obj['spec']['scaleTargetRef'];key=ref['kind']+'/'+ref['name']
+            hpas[key]={'uid':obj['metadata']['uid'],'spec_hash':sha256(obj['spec']),
+                       'minimum':obj['spec'].get('minReplicas',1)}
         return {'nodes':[{'name':n['metadata']['name'],'allocatable':n['status']['allocatable'],
                            'conditions':n['status']['conditions']} for n in nodes],
+                'controllers':controllers,'hpas':hpas,
                 'workloads':[{'name':p['metadata']['name'],'uid':p['metadata']['uid'],'phase':p['status'].get('phase'),
                     'app':p['metadata'].get('labels',{}).get('app'),
-                    'ready':all(c.get('ready') for c in p['status'].get('containerStatuses',[])),
+                    'ready':bool(p['status'].get('containerStatuses')) and all(c.get('ready') for c in p['status'].get('containerStatuses',[])),
+                    'deleting':bool(p['metadata'].get('deletionTimestamp')),
                     'restarts':sum(c.get('restartCount',0) for c in p['status'].get('containerStatuses',[]))}
                     for p in pods if p['status'].get('phase')=='Running'
                     and not any(o.get('kind')=='Job' for o in p['metadata'].get('ownerReferences',[]))]}
@@ -128,13 +141,25 @@ class Harness:
         if {n['name'] for n in current['nodes']}!={n['name'] for n in self.baseline['nodes']}:
             self.abort_reason='Node inventory changed during campaign';raise SafetyError(self.abort_reason)
         old={w['name']:w for w in self.baseline['workloads']}
+        def healthy_known_hpa(pod):
+            key='Deployment/'+str(pod.get('app'))
+            before_hpa=self.baseline.get('hpas',{}).get(key)
+            now_hpa=current.get('hpas',{}).get(key)
+            before_controller=self.baseline.get('controllers',{}).get(key)
+            now_controller=current.get('controllers',{}).get(key)
+            return bool(before_hpa and before_hpa==now_hpa and before_controller and now_controller
+                and before_controller['uid']==now_controller['uid']
+                and before_controller['template_hash']==now_controller['template_hash']
+                and now_controller['ready']>=max(1,now_hpa['minimum']))
         current_names={w['name'] for w in current['workloads']}
-        missing=[name for name,w in old.items() if w['ready'] and name not in current_names]
+        turnover=[name for name,w in old.items() if w['ready'] and name not in current_names and healthy_known_hpa(w)]
+        if turnover:self.trace('healthy_hpa_pod_turnover','OBSERVED',{'pods':turnover,'controllers':current['controllers']})
+        missing=[name for name,w in old.items() if w['ready'] and name not in current_names and not healthy_known_hpa(w)]
         if missing:
             self.abort_reason='Original running workload disappeared: '+','.join(missing)
             raise SafetyError(self.abort_reason)
         for w in current['workloads']:
-            if w['name'] in old and old[w['name']]['ready'] and not w['ready']:
+            if w['name'] in old and old[w['name']]['ready'] and not w['ready'] and not (w.get('deleting') and healthy_known_hpa(w)):
                 self.abort_reason='Original workload readiness degraded: '+w['name'];raise SafetyError(self.abort_reason)
             if w['name'] in old and w['restarts']>old[w['name']]['restarts']:
                 self.abort_reason='Original workload restarted: '+w['name'];raise SafetyError(self.abort_reason)
@@ -146,6 +171,8 @@ class Harness:
                 memory=quantity(m['usage']['memory'])/quantity(a['memory'])
                 cpu=quantity(m['usage']['cpu'],'cpu')/quantity(a['cpu'],'cpu')
                 if memory>.90 or cpu>.95:
+                    self.trace('resource_guard','FAIL',{'node':m['metadata']['name'],
+                        'cpu_fraction':cpu,'memory_fraction':memory,'usage':m['usage']})
                     self.abort_reason='Node safety threshold exceeded';raise SafetyError(self.abort_reason)
             self.trace('resource_sample','OBSERVED',{'node_metrics':metrics})
         except urllib.error.HTTPError as exc:
@@ -207,13 +234,18 @@ class Harness:
     def prepare(self):
         manifests=resources(self.scope,self.source)
         self.save('manifests.json',{'apiVersion':'v1','kind':'List','items':manifests})
-        staged=[]
+        staged={}
         for obj in manifests:
-            if obj['kind']=='Deployment' and obj['metadata']['name']=='speed-layer':staged.append(obj);continue
+            if obj['kind'] in ('Deployment','StatefulSet'):
+                staged[(obj['kind'],obj['metadata']['name'])]=obj
+                continue
             self.create(obj)
         for kind,name in [('StatefulSet','kafka'),('StatefulSet','hdfs-namenode'),('StatefulSet','hdfs-datanode'),
                           ('Deployment','elasticsearch'),('Deployment','es-gate'),('Deployment','spark-master'),
                           ('Deployment','spark-worker'),('Deployment','qa-agent'),('Deployment','music-api')]:
+            # Stagger real readiness, rather than booting every JVM at once on
+            # shared physical nodes. Resource safety thresholds are unchanged.
+            self.create(staged[(kind,name)])
             print('WAIT '+kind+'/'+name,flush=True);self.ready(kind,name,timeout=600)
         p,log=self._spawn(['kubectl','--context='+self.scope['context'],'-n',self.namespace,'port-forward',
             'pod/'+self.pod('qa-agent')['metadata']['name'],':8899','--address=127.0.0.1'],'agent-forward')
@@ -223,7 +255,7 @@ class Harness:
             return 'http://127.0.0.1:'+match.group(1) if match else None
         self.agent_url=poll(address,timeout=30,interval=.2)
         self.trace('topics','PASS',self.rpc('topics_init',timeout=90))
-        for obj in staged:self.create(obj)
+        self.create(staged[('Deployment','speed-layer')])
         self.ready('Deployment','speed-layer',timeout=900)
         poll(lambda:self.kube('logs','-n',self.namespace,'deployment/speed-layer','--tail=100'),
              lambda text:'Started streaming queries:' in text,timeout=900,interval=5,guard=self.guard)
@@ -235,11 +267,29 @@ class Harness:
         self.guard()
         request=urllib.request.Request(self.agent_url+'/invoke',method='POST',
             data=json.dumps({'op':op,'args':args or {}},ensure_ascii=False).encode(),headers={'Content-Type':'application/json'})
-        try:
-            with urllib.request.urlopen(request,timeout=timeout) as response:data=json.load(response)
-        except urllib.error.HTTPError as exc:
-            raise RuntimeError('Observer '+op+' failed: '+sanitize(exc.read().decode())[:1200]) from exc
-        return data['result']
+        # Only observations can be retried. Never replay publish/crawl/listen RPCs:
+        # a timed-out producer may already have committed its event to the broker.
+        read_only=op in ('hdfs_records','hdfs','checkpoints','observe','end_offsets','versions')
+        if op=='http':
+            value=args or {};path=urllib.parse.urlparse(value.get('url','')).path
+            method=value.get('method','GET')
+            read_only=method=='GET' or (method=='POST' and path.endswith(('/_search','/_mget')))
+        attempts=3 if read_only else 1
+        for attempt in range(attempts):
+            try:
+                with urllib.request.urlopen(request,timeout=timeout) as response:data=json.load(response)
+                return data['result']
+            except urllib.error.HTTPError as exc:
+                detail=sanitize(exc.read().decode())[:1200]
+                try:transient=json.loads(detail).get('error') in ('TimeoutError','URLError','ConnectionError')
+                except (ValueError,AttributeError):transient=False
+                if not transient or attempt+1==attempts:
+                    raise RuntimeError('Observer '+op+' failed: '+detail) from exc
+            except (urllib.error.URLError,TimeoutError) as exc:
+                detail=sanitize(exc)
+                if attempt+1==attempts:raise RuntimeError('Observer '+op+' failed: '+detail) from exc
+            self.trace('observer_retry','RETRY',{'op':op,'attempt':attempt+1,'reason':detail})
+            self.guard();threading.Event().wait(.5*(attempt+1))
 
     def http(self,path,method='GET',body=None,service='music-api',timeout=60):
         port=8000 if service=='music-api' else 9200
@@ -369,8 +419,8 @@ class Harness:
                     return [p for p in self.list('Pod') if not p['metadata'].get('deletionTimestamp')]
                 try:poll(remaining,lambda p:not p,timeout=120,interval=3)
                 except TimeoutError:pass
-                self.save('cleanup_remaining_metadata.json',self.namespace_inventory())
                 leftover=self.namespace_inventory()
+                self.save('cleanup_remaining_metadata.json',leftover)
                 allowed={('ServiceAccount','default'),('ConfigMap','kube-root-ca.crt')}
                 journal_uids={r['uid'] for r in self.journal}
                 foreign=[r for r in leftover if (r['kind'],r['name']) not in allowed and r['kind']!='Event'
@@ -399,6 +449,10 @@ class Harness:
                 if r.get('namespaced') and 'list' in r.get('verbs',[]) and '/' not in r['name']:
                     targets.append((prefix,r))
         for group in self.request('GET','/apis')['groups']:
+            # Metrics are cached observations, not namespace-owned stored objects;
+            # PodMetrics may outlive their Pod briefly and have no metadata UID.
+            if group['name'] in ('metrics.k8s.io','custom.metrics.k8s.io','external.metrics.k8s.io'):
+                continue
             prefix='/apis/'+group['preferredVersion']['groupVersion']
             for r in self.request('GET',prefix).get('resources',[]):
                 if r.get('namespaced') and 'list' in r.get('verbs',[]) and '/' not in r['name']:targets.append((prefix,r))
@@ -407,7 +461,7 @@ class Harness:
             prefix,r=target;path=prefix+'/namespaces/'+self.namespace+'/'+r['name']
             request=urllib.request.Request(self.proxy+path,headers={'Accept':'application/json;as=PartialObjectMetadataList;g=meta.k8s.io;v=v1'})
             with urllib.request.urlopen(request,timeout=15) as response:data=json.load(response)
-            return [{'kind':r['kind'],'name':x['metadata']['name'],'uid':x['metadata']['uid'],
+            return [{'kind':r['kind'],'name':x['metadata']['name'],'uid':x['metadata'].get('uid'),
                      'labels':x['metadata'].get('labels'),'owners':x['metadata'].get('ownerReferences',[]),
                      'deleting':bool(x['metadata'].get('deletionTimestamp'))} for x in (data.get('items') or [])]
         result=[]

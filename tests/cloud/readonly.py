@@ -10,6 +10,8 @@ import urllib.request
 from .harness import Harness,process
 from .safety import SafetyError,poll,sha256
 
+MAX_RESPONSE_BYTES=4*1024*1024  # finite observer budget, not an API response-size contract
+
 
 class ReadOnly(Harness):
     def __init__(self,scope,source,report,namespace):
@@ -47,12 +49,12 @@ class ReadOnly(Harness):
             headers={'Content-Type':'application/json'})
         start=time.perf_counter()
         try:
-            with urllib.request.urlopen(request,timeout=25) as response:status=response.status;raw=response.read(2*1024*1024+1)
-        except urllib.error.HTTPError as exc:status=exc.code;raw=exc.read(2*1024*1024+1)
-        if len(raw)>2*1024*1024:raise SafetyError('Read-only response budget exceeded')
+            with urllib.request.urlopen(request,timeout=25) as response:status=response.status;raw=response.read(MAX_RESPONSE_BYTES+1)
+        except urllib.error.HTTPError as exc:status=exc.code;raw=exc.read(MAX_RESPONSE_BYTES+1)
+        if len(raw)>MAX_RESPONSE_BYTES:raise SafetyError('Read-only response budget exceeded')
         try:value=json.loads(raw)
         except ValueError:value=raw.decode('utf-8',errors='replace')[:500]
-        result={'status':status,'body':value,'latency_ms':(time.perf_counter()-start)*1000}
+        result={'status':status,'body':value,'body_bytes':len(raw),'latency_ms':(time.perf_counter()-start)*1000}
         self.trace('live_http','OBSERVED',{'service':service,'path':path,**result})
         return result
 

@@ -26,7 +26,9 @@ step "Kafka (3 broker KRaft), HDFS, Elasticsearch"
 kubectl apply -f k8s/10-kafka.yaml -f k8s/20-hdfs.yaml
 if [ "$PROFILE" = "full" ]; then
   kubectl apply -f k8s/profiles/full/30-elasticsearch.yaml
-  k patch configmap music-env --type merge -p '{"data":{"SPEED_CORES_MAX":"4","BATCH_CORES_MAX":"4","EXECUTOR_MEMORY":"1g","HDFS_REPLICATION":"3","ES_REPLICAS":"1"}}'
+  # Standalone accounts for executor heap, not Python/native/RocksDB memory.
+  # Keep speed + batch within 3 workers x 2 slots and leave physical RAM headroom.
+  k patch configmap music-env --type merge -p '{"data":{"SPEED_CORES_MAX":"3","BATCH_CORES_MAX":"3","EXECUTOR_MEMORY":"512m","ROCKSDB_MEMORY_MB":"64","HDFS_REPLICATION":"3","ES_REPLICAS":"1"}}'
 else
   kubectl apply -f k8s/30-elasticsearch.yaml
 fi
@@ -43,8 +45,8 @@ step "Spark cluster (master + worker)"
 kubectl apply -f k8s/40-spark-cluster.yaml
 if [ "$PROFILE" = "full" ]; then
   k scale statefulset/hdfs-datanode --replicas=3
-  k set env deployment/spark-worker WORKER_MEMORY=3g WORKER_CORES=3   # 3 worker x 3 core = 9 >= speed 4 + batch 4
-  k set resources deployment/spark-worker --requests=cpu=1,memory=3Gi --limits=memory=4Gi
+  k set env deployment/spark-worker WORKER_MEMORY=1g WORKER_CORES=2
+  k set resources deployment/spark-worker --requests=cpu=500m,memory=2Gi --limits=memory=3Gi
   k scale deployment/spark-worker --replicas=3
 fi
 k rollout status statefulset/hdfs-datanode --timeout=15m

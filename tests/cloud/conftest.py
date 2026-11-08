@@ -7,12 +7,17 @@ def pytest_addoption(parser):
     group.addoption('--cloud-scope',default=None,help='Explicit approved scope JSON; normally supplied by safe runner')
     group.addoption('--cloud-mode',default='off',choices=['off','e2e','reliability','performance','all'])
     group.addoption('--allow-destructive',action='store_true',help='Owned, isolated test resources only')
+    group.addoption('--cloud-case-id',action='append',default=[],help='Optional explicit case IDs for independent regression rechecks')
 
 
 def pytest_collection_modifyitems(config,items):
     for item in items:
         marker=item.get_closest_marker('cloud_case')
         if not marker:continue
+        selected=config.getoption('--cloud-case-id')
+        if selected and marker.kwargs['id'] not in selected:
+            item.add_marker(pytest.mark.skip(reason='NOT RUN: different explicitly selected cloud case'))
+            continue
         if not config.getoption('--cloud-scope') or config.getoption('--cloud-mode')=='off':
             item.add_marker(pytest.mark.skip(reason='BLOCKED: cloud tests are opt-in; no approved isolated stack'))
         elif marker.kwargs.get('destructive') and not config.getoption('--allow-destructive'):

@@ -1,0 +1,43 @@
+# Cloud reliability fixes
+
+This change addresses observed worker OOM and batch checkpoint loss, and the adversarial replay, late-chart and malformed-record cases. Runtime results are recorded separately; source changes alone do not prove cloud recovery or exactly-once processing.
+
+## Memory and concurrency
+
+The full deployment profile keeps three workers but uses two slots and 1GiB of schedulable executor heap per worker, with 512MiB executors. Speed and batch each request at most three slots. Each worker requests 2GiB physical memory with a 3GiB limit. This reserves space for worker JVM, Python workers and native state beyond executor heap; it is a resource budget, not a measured guarantee that all workloads fit.
+
+RocksDB memory management is enabled with a configurable `ROCKSDB_MEMORY_MB` (default64). Nonpositive values fail startup explicitly. No cluster/nodepool scaling or new persistent disk is required. Validate real CPU/native/Python memory after rollout before increasing traffic. [Spark's memory management documentation](https://spark.apache.org/docs/3.5.7/structured-streaming-programming-guide.html#rocksdb-state-store-memory-management) describes why native state needs a separate bound.
+
+## Durable batch checkpoints
+
+`batch_views.py` uses eager reliable DataFrame checkpoints under `CHECKPOINT_PATH` (or the normal checkpoint root), in `batch-views/<timestamp-and-uuid>`. Concurrent jobs cannot share a checkpoint directory. The two old local checkpoints are replaced, so losing an executor cache does not remove the only copy of truncated lineage. Successful publication cleans only that run's checkpoint directory; a failed run retains its checkpoint for diagnosis. Monitor retained failed-run directories and apply an operator-reviewed retention policy. No shared checkpoint or historical failed Job is deleted.
+
+Reliable checkpoints require an accessible checkpoint filesystem; production uses the existing HDFS. The `file://` local fallback is suitable only for a local Spark process, not distributed executor-loss durability. [Spark checkpoint API](https://spark.apache.org/docs/3.5.7/api/python/reference/pyspark.sql/api/pyspark.sql.DataFrame.checkpoint.html) documents the checkpoint-directory requirement.
+
+## Streaming state migration and logical replay
+
+Realtime play/skip/like counts use sets of event IDs inside each event-time minute window. Exact replays, including different Kafka partitions, count once in the window. State remains subject to the ten-minute watermark; this is not unlimited/global exactly-once deduplication. Metadata conflicts under reused IDs are still a separate data-quality concern.
+
+Because the aggregate state schema changes, plays uses `plays-v2` by default; `PLAYS_CHECKPOINT_PATH` can explicitly select its location. Old plays checkpoints are preserved. Kafka starting-offset policy remains unchanged: a new checkpoint may replay retained input and need catch-up time. Do not force `latest` simply to hide backlog. The test observer follows the new default directory while retaining the logical query name `plays`.
+
+## Late chart writes and raw failures
+
+Chart updates use Elasticsearch atomic scripted upsert per chart/scope/rank ID. A lower `crawled_ms` becomes a no-op even when it arrives in a later microbatch or races another writer. Bounded bulk/network retries propagate exhausted or permanent failures. This protects each chart position; it is not an atomic whole-chart publication protocol.
+
+The insight API keeps malformed addressable raw documents in the raw store and excludes them from aggregation while returning partial-data metadata and up to100 document IDs for audit. Valid records on later scroll pages remain readable. A malformed unaddressable envelope, all-invalid dataset, or request exceeding200,000 scanned raw records still returns422. Elasticsearch unavailability still returns503; archive fallback is not introduced.
+
+## Empty views and test observation
+
+The first run of a valid empty batch view now creates its Elasticsearch index after a successful Spark write, before refreshing it. The connector may perform no index creation when there are no rows. A concurrent index creator is accepted only for `resource_already_exists_exception`; other HTTP failures still propagate. Existing generations are not deleted when the write fails.
+
+The test harness starts services in readiness order to avoid simultaneous JVM startup peaks. Resource thresholds and assertions remain unchanged. Read-only observer RPCs have bounded retries; producer/listen/crawler actions are never automatically replayed. The WebHDFS reader follows the [Hadoop client's replica failover approach](https://raw.githubusercontent.com/apache/hadoop/rel/release-3.4.1/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/web/WebHdfsFileSystem.java), excluding a failed DataNode redirect on the next read. Its small cache rechecks file modification time and length so it cannot conceal regenerated query metadata. Cached PodMetrics are excluded from persistent namespace cleanup inventory, while unknown resources still prevent namespace deletion.
+
+Focused unit regressions are in `tests/adversarial/test_adv_cloud_fixes.py`; mocked HTTP/FS contracts are not reported as real-service E2E verification. Original cloud failures and intermediate attempts remain in the private execution reports.
+
+The workload guard recognizes healthy HPA scale-down only when the original HPA specification and controller UID/template are unchanged and the controller retains at least its minimum Ready replicas. Restart increases, unrelated missing pods and readiness degradation still abort the run. A lifecycle response observed with HTTP200 and 2,139,562 bytes exceeded the observer's original 2MiB read budget; the client now accepts at most4MiB, with regressions for both valid larger responses and oversized rejection. This changes neither the server response nor API assertions or node resource thresholds.
+
+An isolated batch recheck also reached the unchanged95% node CPU abort threshold. The test profile now uses smaller CPU caps for Kafka/HDFS, Elasticsearch, worker and drivers so the existing workload retains more headroom. This changes the test resource envelope, not the pipeline oracle or application code. Performance results must include that envelope; they are not full-profile capacity benchmarks.
+
+## Verification and rollout
+
+Keep original failing evidence. Run the default pytest suite, then opt-in isolated Cloud E2E on approved existing nodes. Changing code does not turn historical Job failures into successes: trigger a real validation batch and check publication, logs, worker stability, checkpoints and final API responses. Existing namespace changes require its owner's explicit authorization. Do not publish runtime logs, dataset or cluster metadata along with source code without separate approval.

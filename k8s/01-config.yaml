@@ -20,6 +20,7 @@ data:
   EXECUTOR_MEMORY: "512m"
   HDFS_REPLICATION: "2"
   STATE_STORE: "rocksdb"          # state của Spark Streaming ngoài heap (Linux)
+  ROCKSDB_MEMORY_MB: "64"         # bounded per executor JVM; leave room for Python/native memory
   ES_REPLICAS: "0"
   TZ: "Asia/Ho_Chi_Minh"
   TZ_NAME: "Asia/Ho_Chi_Minh"

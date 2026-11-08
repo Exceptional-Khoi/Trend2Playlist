@@ -480,6 +480,9 @@ async def insight_api(feature: str, days: int = Query(30, ge=1, le=365), as_of: 
     mode = insight_backend()
     if mode == 'elasticsearch':
         records = []
+        raw_count = 0
+        invalid_records = 0
+        invalid_ids = []
         scroll = None
         try:
             response = await es.post('/music-insight-raw/_search', params={'scroll': '1m'},
@@ -491,12 +494,25 @@ async def insight_api(feature: str, days: int = Query(30, ge=1, le=365), as_of: 
                 hits = page['hits']['hits']
                 if not hits:
                     break
-                records.extend(insights.normalize(json.loads(h['_source']['value'])) for h in hits)
-                if len(records) > 200000:
+                raw_count += len(hits)
+                if raw_count > 200000:
                     raise HTTPException(422, 'Vượt giới hạn 200.000 bản ghi; cần batch view cho tập dữ liệu này.')
+                for hit in hits:
+                    try:
+                        records.append(insights.normalize(json.loads(hit['_source']['value'])))
+                    except (ValueError, TypeError, KeyError, AttributeError):
+                        # A malformed ES envelope without an addressable document cannot
+                        # be audited/quarantined. Retain the existing controlled 422 contract.
+                        if not hit.get('_id'):
+                            raise HTTPException(422, 'Dữ liệu raw Elasticsearch không đúng schema')
+                        invalid_records += 1
+                        if len(invalid_ids) < 100:
+                            invalid_ids.append(hit['_id'])
                 response = await es.post('/_search/scroll', json={'scroll': '1m', 'scroll_id': scroll})
                 response.raise_for_status()
                 page = response.json()
+            if invalid_records and not records:
+                raise HTTPException(422, 'Không có bản ghi raw hợp lệ; kiểm tra dữ liệu cách ly')
         except httpx.HTTPError:
             raise HTTPException(503, 'Chưa đọc được music-insight-raw; kiểm tra streaming/import dữ liệu.')
         except (ValueError, TypeError, KeyError, AttributeError) as exc:
@@ -508,6 +524,8 @@ async def insight_api(feature: str, days: int = Query(30, ge=1, le=365), as_of: 
                 except httpx.HTTPError:
                     pass
         metadata = {'mode': mode, 'note': 'Dữ liệu raw từ pipeline/import; không dùng archive thay thế khi ES lỗi.'}
+        if invalid_records:
+            metadata.update(partial=True, invalid_records=invalid_records, invalid_document_ids=invalid_ids)
     else:
         try:
             records, metadata = await asyncio.to_thread(insights.load_local)

@@ -19,12 +19,13 @@
 import os
 import re
 import time
+import uuid
 
 from pyspark.sql import Window
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
 
-from jobs_common import (LAKE, es_put, es_replace, es_write, genre_udf, get_spark, mention_udf, mention_weight_col,
+from jobs_common import (LAKE, batch_checkpoint_dir, cleanup_batch_checkpoint, es_put, es_replace, es_write, genre_udf, get_spark, mention_udf, mention_weight_col,
                          norm_udf, now_ms, old_provinces_df, path_size_bytes, provinces_df, read_raw, slug_list_udf,
                          write_view)
 
@@ -57,7 +58,8 @@ MAIN_CHARTS = ["zing_realtime", "spotify_top50_vn_daily", "apple_most_played_vn"
 spark = get_spark("music-batch-views")
 t0 = time.time()
 RUN_TS = now_ms()
-RUN_ID = time.strftime("%Y%m%d%H%M%S")
+RUN_ID = time.strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:12]
+BATCH_CHECKPOINT_DIR = batch_checkpoint_dir(spark, RUN_ID)
 weights_df = spark.createDataFrame(list(CHART_WEIGHTS.items()), "chart_id string, chart_weight double")
 prov = provinces_df(spark)
 old_prov = old_provinces_df(spark)
@@ -260,7 +262,7 @@ evidence = (prov.select("province_code", "population")
             .withColumn("signals", F.array_remove(F.array(
                 F.lit("toàn quốc"), F.when(F.col("a_trd") > 0, F.lit("Google Trends")).otherwise(F.lit("")),
                 F.when(F.col("a_cmt") > 0, F.lit("bình luận")).otherwise(F.lit("")),
-                F.when(F.col("a_evt") > 0, F.lit("lượt nghe")).otherwise(F.lit(""))), "")).localCheckpoint())
+                F.when(F.col("a_evt") > 0, F.lit("lượt nghe")).otherwise(F.lit(""))), "")).checkpoint(eager=True))
 
 den = F.lit(W_NAT) + W_TRD * F.col("a_trd") + W_CMT * F.col("a_cmt") + W_EVT * F.col("a_evt")
 scores = (universe.join(national.select("track_key", "national_score"), "track_key", "left")
@@ -281,7 +283,7 @@ scores = (universe.join(national.select("track_key", "national_score"), "track_k
           .withColumn("c_evt", W_EVT * F.col("a_evt") * F.col("event_affinity") / den)
           .withColumn("score", F.col("c_nat") + F.col("c_trd") + F.col("c_cmt") + F.col("c_evt"))
           .withColumn("rank", F.row_number().over(per_prov.orderBy(F.desc("score"), F.asc("track_key"))))
-          .localCheckpoint())   # cắt lineage dài (nhiều join + window) -> các bước sau lập kế hoạch nhẹ, driver đỡ tốn RAM
+          .checkpoint(eager=True))  # Reliable HDFS checkpoint survives executor/cache loss.
 top = scores.where(F.col("rank") <= TOP_N).cache()
 
 cat_small = catalog.select("track_key", "title", "artists", "genre", "thumbnail", "sources")
@@ -471,4 +473,9 @@ kpi = {
 es_put("music-an-kpis", "latest", kpi)
 es_put("music-meta", "batch_views", {"run_id": RUN_ID, "run_ts": RUN_TS, "duration_sec": kpi["duration_sec"]})
 print("BATCH VIEWS DONE", kpi, flush=True)
+try:
+    cleanup_batch_checkpoint(spark, BATCH_CHECKPOINT_DIR)
+except Exception as exc:
+    # Published views remain valid; retain checkpoint for operator cleanup on IO failure.
+    print("batch checkpoint cleanup failed:", type(exc).__name__, flush=True)
 spark.stop()

@@ -88,9 +88,34 @@ def get_spark(app_name):
         # Bật trên k8s (Linux). Trên Windows bản JNI của RocksDB từng crash khi thiếu RAM -> mặc định tắt.
         b = b.config("spark.sql.streaming.stateStore.providerClass",
                      "org.apache.spark.sql.execution.streaming.state.RocksDBStateStoreProvider")
+        memory_mb = int(os.getenv("ROCKSDB_MEMORY_MB", "64"))
+        if memory_mb <= 0:
+            raise ValueError("ROCKSDB_MEMORY_MB must be positive")
+        b = (b.config("spark.sql.streaming.stateStore.rocksdb.boundedMemoryUsage", "true")
+             .config("spark.sql.streaming.stateStore.rocksdb.maxMemoryUsageMB", str(memory_mb)))
     spark = b.getOrCreate()
     spark.sparkContext.setLogLevel(os.getenv("SPARK_LOG_LEVEL", "WARN"))
     return spark
+
+
+def batch_checkpoint_dir(spark, run_id):
+    """Reliable, run-owned HDFS checkpoint; never share concurrent batch state."""
+    import re
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
+        raise ValueError("Invalid batch run ID")
+    path = CKPT.rstrip("/") + "/batch-views/" + run_id
+    spark.sparkContext.setCheckpointDir(path)
+    return path
+
+
+def cleanup_batch_checkpoint(spark, path):
+    prefix = CKPT.rstrip("/") + "/batch-views/"
+    suffix = path.removeprefix(prefix)
+    import re
+    if not path.startswith(prefix) or not re.fullmatch(r"[A-Za-z0-9_-]+", suffix):
+        raise ValueError("Refusing checkpoint cleanup outside this batch run")
+    fs, target = _fs(spark, path)
+    fs.delete(target, True)
 
 
 # ------------------------------------------------------------------ UDF (textnorm được gửi kèm qua --py-files)
@@ -209,6 +234,62 @@ def es_write(df, index, id_col=None):
     w.mode("append").save()
 
 
+def write_latest_partition(rows, endpoint, index, id_col, version_col):
+    """Atomic latest-capture updates; a stale microbatch is a no-op, not a 409."""
+    from urllib.error import HTTPError, URLError
+    from urllib.parse import quote
+    script = ("def old = ctx._source[params.field]; "
+              "if (ctx.op == 'create' || old == null || params.doc[params.field] >= old) "
+              "{ ctx._source = params.doc; } else { ctx.op = 'noop'; }")
+    pending = []
+
+    def flush(batch):
+        lines = []
+        for doc in batch:
+            lines.extend([json.dumps({'update': {'_id': str(doc[id_col]), 'retry_on_conflict': 3}}),
+                          json.dumps({'scripted_upsert': True, 'script': {'source': script,
+                              'params': {'field': version_col, 'doc': doc}}, 'upsert': {}}, allow_nan=False)])
+        req = urllib.request.Request(endpoint + '/' + quote(index, safe='') + '/_bulk', method='POST',
+              data=('\n'.join(lines) + '\n').encode(), headers={'Content-Type': 'application/x-ndjson'})
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(req, timeout=30) as response:
+                    result = json.load(response)
+                statuses = [item['update']['status'] for item in result.get('items', [])]
+                if len(statuses) != len(batch):
+                    raise RuntimeError('Incomplete Elasticsearch bulk response')
+                if all(200 <= status < 300 for status in statuses):
+                    return
+                if not all(200 <= status < 300 or status in (429, 502, 503, 504) for status in statuses):
+                    raise RuntimeError('Elasticsearch latest-capture bulk rejected document')
+            except HTTPError as exc:
+                if exc.code not in (429, 502, 503, 504):
+                    raise
+            except (URLError, TimeoutError):
+                pass
+            if attempt == 2:
+                raise RuntimeError('Elasticsearch latest-capture bulk retries exhausted')
+            time.sleep(.5 * (attempt + 1))
+
+    for row in rows:
+        doc = row.asDict(recursive=True) if hasattr(row, 'asDict') else dict(row)
+        if doc.get(id_col) is None or type(doc.get(version_col)) is not int:
+            raise ValueError('Latest-capture document requires ID and integer timestamp')
+        pending.append(doc)
+        if len(pending) == 200:
+            flush(pending); pending = []
+    if pending:
+        flush(pending)
+
+
+def es_write_latest(df, index, id_col, version_col='crawled_ms'):
+    if not ES_NODES:
+        return es_write(df, index, id_col)
+    # Capture driver configuration: standalone executors need not inherit ES env.
+    endpoint = f'http://{ES_NODES}:{ES_PORT}'
+    df.foreachPartition(lambda rows: write_latest_partition(rows, endpoint, index, id_col, version_col))
+
+
 def _es_request(method, path, body=None):
     if not ES_NODES:
         return None
@@ -241,7 +322,25 @@ def es_replace(df, index, id_col, run_id):
                 raise
     es_write(df, index, id_col)
     if ES_NODES:
-        _es_request("POST", f"/{index}/_refresh")
+        try:
+            _es_request("POST", f"/{index}/_refresh")
+        except HTTPError as exc:
+            if exc.code != 404:
+                raise
+            # The Spark connector does not create an index for an empty frame.
+            # A valid empty view must publish successfully on its first run too.
+            try:
+                _es_request("PUT", f"/{index}", {})
+            except HTTPError as created:
+                if created.code != 400:
+                    raise
+                try:
+                    kind = json.loads(created.read()).get('error', {}).get('type')
+                except (ValueError, AttributeError):
+                    raise created
+                if kind != 'resource_already_exists_exception':
+                    raise
+            _es_request("POST", f"/{index}/_refresh")
         if previous:
             _es_request("POST", f"/{index}/_delete_by_query?conflicts=proceed&refresh=true",
                         {'query': {'terms': {'run_id': previous}}})

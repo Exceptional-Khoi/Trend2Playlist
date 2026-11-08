@@ -18,7 +18,7 @@ from pyspark.sql import Window
 from pyspark.sql import functions as F
 
 from jobs_common import (CKPT, COMMENT_SCHEMA, CHART_SCHEMA, EVENT_SCHEMA, KAFKA_BOOTSTRAP, LAKE, TOPICS,
-                         es_put, es_write, get_spark, mention_udf, mention_weight_col, now_ms, read_view)
+                         es_put, es_write, es_write_latest, get_spark, mention_udf, mention_weight_col, now_ms, read_view)
 
 spark = get_spark("music-speed-layer")
 QUERIES = [q.strip() for q in os.getenv("SPEED_QUERIES", "ingest,plays,mentions,charts,recommend").split(",") if q.strip()]
@@ -99,11 +99,11 @@ if "ingest" in QUERIES:
 
 # ---------------------------------------------------------------- 2) lượt nghe theo tỉnh/phút
 if "plays" in QUERIES:
-    agg = (events_stream().withWatermark("ts", "10 minutes")
+    agg = (events_stream().where("event_id IS NOT NULL AND event_id != ''").withWatermark("ts", "10 minutes")
            .groupBy(F.window("ts", "1 minute"), "province_code", "track_key")
-           .agg(F.sum(F.when(F.col("action") == "play", 1).otherwise(0)).alias("plays"),
-                F.sum(F.when(F.col("action") == "skip", 1).otherwise(0)).alias("skips"),
-                F.sum(F.when(F.col("action") == "like", 1).otherwise(0)).alias("likes"),
+           .agg(F.size(F.collect_set(F.when(F.col("action") == "play", F.col("event_id")))).alias("plays"),
+                F.size(F.collect_set(F.when(F.col("action") == "skip", F.col("event_id")))).alias("skips"),
+                F.size(F.collect_set(F.when(F.col("action") == "like", F.col("event_id")))).alias("likes"),
                 F.approx_count_distinct("user_id").alias("listeners"),
                 F.max("ts_ms").alias("last_ts_ms"),
                 F.first("title").alias("title"), F.first("artists").alias("artists"), F.first("genre").alias("genre")))
@@ -113,7 +113,9 @@ if "plays" in QUERIES:
         "province_code", "track_key", "title", "artists", "genre", "plays", "skips", "likes", "listeners", "last_ts_ms")
     started.append(out.writeStream.outputMode("update").queryName("rt_plays")
                    .foreachBatch(lambda df, _: es_write(df, "music-rt-plays", "doc_id"))
-                   .option("checkpointLocation", CKPT + "/plays")
+                   # Aggregate state now contains bounded per-window logical ID sets.
+                   # Preserve the old checkpoint rather than loading incompatible state.
+                   .option("checkpointLocation", os.getenv("PLAYS_CHECKPOINT_PATH") or CKPT + "/plays-v2")
                    .trigger(processingTime=os.getenv("PLAYS_TRIGGER", "10 seconds")).start())
 
 # ---------------------------------------------------------------- 3) bình luận nhắc tỉnh
@@ -145,7 +147,7 @@ if "charts" in QUERIES:
         w = Window.partitionBy("chart_id", "chart_scope")
         latest = df.withColumn("_mx", F.max("crawled_ms").over(w)).where("crawled_ms = _mx").drop("_mx", "raw_title")
         latest = latest.dropDuplicates(["chart_id", "chart_scope", "rank"])
-        es_write(latest.withColumn("doc_id", F.concat_ws("|", "chart_id", "chart_scope", F.col("rank").cast("string"))),
+        es_write_latest(latest.withColumn("doc_id", F.concat_ws("|", "chart_id", "chart_scope", F.col("rank").cast("string"))),
                  "music-rt-charts", "doc_id")
 
     started.append(charts.writeStream.queryName("rt_charts").foreachBatch(write_charts)

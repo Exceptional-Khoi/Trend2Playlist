@@ -50,6 +50,7 @@ def main():
     parser.add_argument('--scope',type=Path,help='Approved project/context/unique namespace/run ID JSON; required for GKE')
     parser.add_argument('--report-dir',type=Path,default=SOURCE/'test_reports/cloud_e2e')
     parser.add_argument('--allow-destructive',action='store_true',help='Only owned isolated fault scenarios')
+    parser.add_argument('--case-id',action='append',default=[],help='Recheck selected independent case IDs in a fresh owned stack')
     parser.add_argument('--collect-only',action='store_true')
     parser.add_argument('--prepare-only',action='store_true',help='Readiness and cleanup, no test execution')
     args=parser.parse_args();os.chdir(SOURCE)
@@ -85,6 +86,7 @@ def main():
             options=['tests/cloud','-ra','--strict-markers','-p','no:cacheprovider',
                 '--cloud-mode='+mode,'--cloud-scope='+str(args.scope.resolve()),'--junitxml='+str(report/'junit.xml')]
             if args.allow_destructive:options.append('--allow-destructive')
+            for identifier in args.case_id:options.extend(['--cloud-case-id',identifier])
             exit_code=int(pytest.main(options,plugins=[recorder]));outcome['status']='EXECUTED';outcome['pytest_exit_code']=exit_code
     except Exception as exc:
         outcome.update(status='BLOCKED',reason=sanitize(str(exc)),traceback=sanitize(traceback.format_exc()))

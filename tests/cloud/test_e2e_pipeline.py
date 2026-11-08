@@ -57,6 +57,7 @@ def test_actual_crawler_to_api(stack,dataset):
     fixture={'feed':{'results':[{'id':dataset.track(),'name':'QA Đêm 🎵','artistName':'QA Artist',
         'genres':[{'name':'Pop'}],'url':'https://example.invalid/qa'}]}}
     result=stack.rpc('crawl_apple',{'fixture':fixture},timeout=120)
+    stack.trace('crawler_produce','OBSERVED',{'fixture':fixture,**result})
     assert len(result['records'])==1
     record=result['records'][0];acks=result['acks']
     observed=stack.rpc('observe',{'positions':acks})

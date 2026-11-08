@@ -97,35 +97,35 @@ def resources(scope,source):
                 obj['spec'].pop('volumeClaimTemplates',None)
                 pod=obj['spec']['template']['spec'];pod.setdefault('volumes',[]).append({'name':'data','emptyDir':{'sizeLimit':'1Gi'}})
                 for c in pod['containers']:
-                    c['resources']={'requests':{'cpu':'100m','memory':'256Mi'},'limits':{'cpu':'300m','memory':'640Mi'}}
+                    c['resources']={'requests':{'cpu':'100m','memory':'256Mi'},'limits':{'cpu':'200m','memory':'640Mi'}}
                 for init in pod.get('initContainers',[]):
                     init['resources']={'requests':{'cpu':'25m','memory':'32Mi'},'limits':{'cpu':'100m','memory':'64Mi'}}
             add(obj)
 
     service('elasticsearch',[9200])
     es=deployment('elasticsearch','docker.elastic.co/elasticsearch/elasticsearch:8.19.22',[],
-        memory='1Gi',request='512Mi',cpu='500m',command=['/bin/tini','--','/usr/local/bin/docker-entrypoint.sh'],
+        memory='1Gi',request='512Mi',cpu='350m',command=['/bin/tini','--','/usr/local/bin/docker-entrypoint.sh'],
         env={'discovery.type':'single-node','xpack.security.enabled':'false','ES_JAVA_OPTS':'-Xms256m -Xmx256m'},
         volumes=[{'name':'data','emptyDir':{'sizeLimit':'1Gi'}}],mounts=[{'name':'data','mountPath':'/usr/share/elasticsearch/data'}])
     es['spec']['template']['spec']['securityContext']={'fsGroup':1000}
     es['spec']['template']['spec']['containers'][0]['args']=['eswrapper']
     es['spec']['template']['spec']['containers'][0]['readinessProbe']={'httpGet':{'path':'/','port':9200},'initialDelaySeconds':15,'periodSeconds':5}
     service('es-gate',[9200])
-    gate=deployment('es-gate','python:3.12-slim',['python /qa/es_gate.py'],memory='192Mi',request='64Mi',cpu='150m',
+    gate=deployment('es-gate','python:3.12-slim',['python /qa/es_gate.py'],memory='192Mi',request='64Mi',cpu='100m',
         volumes=[{'name':'code','configMap':{'name':'qa-gate-code'}}],mounts=[{'name':'code','mountPath':'/qa'}])
     gate['spec']['template']['spec']['containers'][0]['readinessProbe']={'tcpSocket':{'port':9200},'periodSeconds':3}
 
     service('spark-master',[7077,8080])
     master=deployment('spark-master',SPARK_IMAGE,['exec /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master --host "$POD_IP" --port 7077 --webui-port 8080'],
-        memory='384Mi',request='128Mi',cpu='200m',env={'SPARK_DAEMON_MEMORY':'128m','SPARK_MASTER_HOST':'spark-master'})
+        memory='384Mi',request='128Mi',cpu='150m',env={'SPARK_DAEMON_MEMORY':'128m','SPARK_MASTER_HOST':'spark-master'})
     master['spec']['template']['spec']['containers'][0]['readinessProbe']={'tcpSocket':{'port':7077},'periodSeconds':5}
     master['spec']['template']['spec']['containers'][0]['env'].append({'name':'POD_IP','valueFrom':{'fieldRef':{'fieldPath':'status.podIP'}}})
     worker=deployment('spark-worker',SPARK_IMAGE,['exec /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker --host "$POD_IP" --cores 2 --memory 1400m spark://spark-master:7077'],
-        memory='2304Mi',request='1536Mi',cpu='1200m',env={'SPARK_DAEMON_MEMORY':'128m'})
+        memory='2304Mi',request='1536Mi',cpu='800m',env={'SPARK_DAEMON_MEMORY':'128m'})
     worker['spec']['template']['spec']['containers'][0]['env'].append({'name':'POD_IP','valueFrom':{'fieldRef':{'fieldPath':'status.podIP'}}})
     worker['spec']['template']['spec']['containers'][0]['readinessProbe']={'tcpSocket':{'port':8081},'periodSeconds':5,'initialDelaySeconds':10}
     driver=deployment('speed-layer',SPARK_IMAGE,['exec bash /opt/app/submit.sh speed_layer.py cloud-e2e-speed 1'],
-        memory='1536Mi',request='896Mi',cpu='750m',env={'DRIVER_MEMORY':'700m','SPEED_QUERIES':'ingest,plays,mentions,charts,recommend'},
+        memory='1536Mi',request='896Mi',cpu='500m',env={'DRIVER_MEMORY':'700m','SPEED_QUERIES':'ingest,plays,mentions,charts,recommend'},
         volumes=[{'name':'code','configMap':{'name':'spark-code'}}],mounts=[{'name':'code','mountPath':'/opt/app'}])
     c=driver['spec']['template']['spec']['containers'][0];c['envFrom']=[{'configMapRef':{'name':'music-env'}}]
     c['env'].append({'name':'POD_IP','valueFrom':{'fieldRef':{'fieldPath':'status.podIP'}}})
@@ -133,7 +133,7 @@ def resources(scope,source):
     c['readinessProbe']={'tcpSocket':{'port':4040},'initialDelaySeconds':30,'periodSeconds':5}
     service('speed-layer-ui',[4040],app='speed-layer')
     api=deployment('music-api','python:3.12-slim',['pip install -q --no-cache-dir -r /app/requirements.txt && exec uvicorn api:app --host 0.0.0.0 --port 8000'],
-        memory='384Mi',request='128Mi',cpu='350m',volumes=[{'name':'code','configMap':{'name':'serving-code'}}],mounts=[{'name':'code','mountPath':'/app'}])
+        memory='384Mi',request='128Mi',cpu='250m',volumes=[{'name':'code','configMap':{'name':'serving-code'}}],mounts=[{'name':'code','mountPath':'/app'}])
     api_c=api['spec']['template']['spec']['containers'][0];api_c['workingDir']='/app';api_c['envFrom']=[{'configMapRef':{'name':'music-env'}}]
     api_c['env'].append({'name':'STATIC_DIR','value':'/static'})
     api['spec']['template']['spec']['volumes'].append({'name':'static','configMap':{'name':'dashboard-static'}})
@@ -142,7 +142,7 @@ def resources(scope,source):
     api_c['livenessProbe']={'httpGet':{'path':'/api/live','port':8000},'initialDelaySeconds':45,'periodSeconds':10}
     service('music-api',[8000])
     agent=deployment('qa-agent','python:3.12-slim',['pip install -q --no-cache-dir -r /app/requirements.txt && exec python /app/agent.py'],
-        memory='512Mi',request='128Mi',cpu='400m',volumes=[{'name':'code','configMap':{'name':'qa-agent-code'}}],mounts=[{'name':'code','mountPath':'/app'}])
+        memory='512Mi',request='128Mi',cpu='300m',volumes=[{'name':'code','configMap':{'name':'qa-agent-code'}}],mounts=[{'name':'code','mountPath':'/app'}])
     agent_c=agent['spec']['template']['spec']['containers'][0];agent_c['workingDir']='/app';agent_c['envFrom']=[{'configMapRef':{'name':'music-env'}}]
     agent_c['readinessProbe']={'httpGet':{'path':'/','port':8899},'initialDelaySeconds':10,'periodSeconds':5}
     service('qa-agent',[8899])
