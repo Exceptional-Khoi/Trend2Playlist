@@ -92,6 +92,16 @@ def resources(scope,source):
         for obj in yaml.safe_load_all(text):
             if not obj or obj['kind']=='PodDisruptionBudget':continue
             if obj['kind']=='ConfigMap':
+                # Only owned test NameNodes: accelerate upload quiet-period /
+                # transaction thresholds so a small fixture can prove physical
+                # checkpoint transfer within a bounded test. Production XML and
+                # its upload-validation safety switch remain unchanged.
+                if obj['metadata']['name']=='hdfs-config':
+                    policy=''.join('<property><name>'+key+'</name><value>'+value+'</value></property>'
+                        for key,value in [('dfs.namenode.checkpoint.period','10'),
+                                          ('dfs.namenode.checkpoint.txns','10'),
+                                          ('dfs.namenode.checkpoint.check.period','5')])
+                    obj['data']['hdfs-site.xml']=obj['data']['hdfs-site.xml'].replace('</configuration>',policy+'</configuration>')
                 add(obj);continue
             if obj['kind']=='StatefulSet':
                 obj['spec'].pop('volumeClaimTemplates',None)

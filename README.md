@@ -57,7 +57,7 @@ nạp vào pod qua ConfigMap.
 |---|---|---|---|
 | Thu thập | Python (requests, youtube-comment-downloader) | CronJob; crawler bình luận là Indexed Job 3 pod | Job retry; tăng số shard |
 | Hàng đợi | Kafka 3.9 KRaft | StatefulSet 3 node | RF=3, min.insync=2, acks=all |
-| Lưu trữ thô | HDFS 3.4 | NameNode + DataNode StatefulSet | replication=2, thêm DataNode |
+| Lưu trữ thô | HDFS 3.4 | NameNode + DataNode StatefulSet, SecondaryNameNode Deployment | replication=2, thêm DataNode; checkpoint metadata định kỳ |
 | Speed layer | Spark 3.5 Structured Streaming | Deployment (1 driver) | checkpoint trên HDFS, ghi ES idempotent |
 | Batch layer | Spark 3.5 | CronJob mỗi giờ / 3 giờ | chạy lại từ master dataset |
 | Tính toán | Spark standalone | master (khôi phục từ PVC) + worker Deployment | scale số worker |

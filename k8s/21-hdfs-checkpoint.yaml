@@ -1,0 +1,73 @@
+# Periodic fsimage/edit-log compaction. This is not a standby/HA NameNode.
+# No PVC: temporary checkpoint copies can be regenerated from the primary.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hdfs-checkpoint-config
+  namespace: music
+data:
+  core-site.xml: |
+    <?xml version="1.0"?>
+    <configuration>
+      <property><name>fs.defaultFS</name><value>hdfs://hdfs-namenode.music.svc.cluster.local:8020</value></property>
+    </configuration>
+  hdfs-site.xml: |
+    <?xml version="1.0"?>
+    <configuration>
+      <property><name>dfs.namenode.http-address</name><value>hdfs-namenode.music.svc.cluster.local:9870</value></property>
+      <property><name>dfs.namenode.secondary.http-address</name><value>0.0.0.0:9868</value></property>
+      <property><name>dfs.namenode.checkpoint.dir</name><value>/checkpoint</value></property>
+      <property><name>dfs.namenode.checkpoint.edits.dir</name><value>/checkpoint</value></property>
+      <property><name>dfs.namenode.checkpoint.period</name><value>900</value></property>
+      <property><name>dfs.namenode.checkpoint.txns</name><value>200000</value></property>
+      <property><name>dfs.namenode.checkpoint.check.period</name><value>60</value></property>
+    </configuration>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hdfs-checkpoint
+  namespace: music
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: hdfs-checkpoint }
+  template:
+    metadata:
+      labels: { app: hdfs-checkpoint }
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext: { fsGroup: 1000 }
+      containers:
+        - name: checkpoint
+          image: apache/hadoop:3.4.1
+          command: ["/bin/bash", "-c"]
+          args: ["exec hdfs secondarynamenode"]
+          env:
+            - { name: HADOOP_HEAPSIZE_MAX, value: "256m" }
+          ports:
+            - { name: http, containerPort: 9868 }
+          startupProbe:
+            tcpSocket: { port: 9868 }
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            tcpSocket: { port: 9868 }
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 9868 }
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 384Mi, ephemeral-storage: 256Mi }
+            limits: { cpu: 500m, memory: 640Mi, ephemeral-storage: 2Gi }
+          volumeMounts:
+            - { name: checkpoint, mountPath: /checkpoint }
+            - { name: conf, mountPath: /opt/hadoop/etc/hadoop/core-site.xml, subPath: core-site.xml }
+            - { name: conf, mountPath: /opt/hadoop/etc/hadoop/hdfs-site.xml, subPath: hdfs-site.xml }
+      volumes:
+        - name: checkpoint
+          emptyDir: { sizeLimit: 1Gi }
+        - name: conf
+          configMap: { name: hdfs-checkpoint-config }

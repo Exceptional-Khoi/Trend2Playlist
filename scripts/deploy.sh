@@ -35,6 +35,8 @@ else
 fi
 k rollout status statefulset/kafka --timeout=15m
 k rollout status statefulset/hdfs-namenode --timeout=15m
+kubectl apply -f k8s/21-hdfs-checkpoint.yaml
+k rollout status deployment/hdfs-checkpoint --timeout=10m
 k rollout status statefulset/elasticsearch --timeout=15m
 
 step "Tạo Kafka topic + ES index template"

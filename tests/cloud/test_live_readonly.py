@@ -26,7 +26,12 @@ def test_live_api_es_health(live):
 
 @case('RO-002','Existing Kafka offset bytes agree with ES raw document',2,kind='integration',services='Kafka,Elasticsearch',timeout=90)
 def test_live_kafka_es_identity(live):
-    result=live.read('/music-insight-raw/_search','elasticsearch',{'size':100,'query':{'match_all':{}}})
+    # Prefer later physical documents in this bounded sample. An unsorted first
+    # page repeatedly selects an offset already expired from Kafka retention.
+    # Physical order is only sampling; exact topic/partition/offset bytes remain
+    # the oracle, and retention misses remain INCONCLUSIVE.
+    result=live.read('/music-insight-raw/_search','elasticsearch',
+        {'size':100,'sort':[{'_doc':'desc'}],'query':{'match_all':{}}})
     assert result['status']==200,result
     candidates=[h for h in result['body']['hits']['hits'] if re.fullmatch(r'music\.[a-z-]+:\d+:\d+',h['_id'])]
     if not candidates:pytest.skip('BLOCKED: no offset-addressed raw records in bounded sample')

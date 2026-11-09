@@ -6,6 +6,7 @@ import pytest
 
 from .safety import SafetyError,owned,quantity,validate_scope
 from .stack import LABEL,resources
+from .test_hdfs_checkpoint import checkpoint_resources
 
 
 def scope():
@@ -26,11 +27,22 @@ def test_cleanup_refuses_foreign_resource():
 
 
 def test_render_never_creates_billable_storage_or_external_service():
-    manifests=resources(scope(),Path(__file__).resolve().parents[2])
+    source=Path(__file__).resolve().parents[2]
+    manifests=resources(scope(),source)+checkpoint_resources(scope(),source)
     assert not any(m['kind']=='PersistentVolumeClaim' or m.get('spec',{}).get('volumeClaimTemplates') for m in manifests)
     assert all(m['spec'].get('type','ClusterIP')=='ClusterIP' for m in manifests if m['kind']=='Service')
     assert all(m['metadata']['labels'][LABEL]==scope()['run_id'] for m in manifests)
     assert all(m['metadata']['namespace']==scope()['namespace'] for m in manifests if m['kind']!='Namespace')
+    checkpoint_config=next(m for m in manifests if m['kind']=='ConfigMap' and m['metadata']['name']=='hdfs-checkpoint-config')
+    assert '.music.svc.cluster.local' not in str(checkpoint_config['data'])
+    assert ('.'+scope()['namespace']+'.svc.cluster.local') in str(checkpoint_config['data'])
+    import xml.etree.ElementTree as ET
+    def policy(xml):return {p.findtext('name'):p.findtext('value') for p in ET.fromstring(xml).findall('property')}
+    primary=next(m for m in manifests if m['kind']=='ConfigMap' and m['metadata']['name']=='hdfs-config')
+    for cm in (primary,checkpoint_config):
+        values=policy(cm['data']['hdfs-site.xml'])
+        assert values['dfs.namenode.checkpoint.period']=='10' and values['dfs.namenode.checkpoint.txns']=='10'
+        assert values.get('dfs.namenode.checkpoint.upload.check','true')=='true'
 
 
 @pytest.mark.parametrize('value,expected',[('100m',.1),('100000000n',.1),('100000u',.1),('2',2)])
