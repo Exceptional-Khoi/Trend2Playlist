@@ -59,6 +59,8 @@ kubectl apply -f k8s/41-speed-layer.yaml -f k8s/42-batch-jobs.yaml -f k8s/50-cra
               -f k8s/51-simulator.yaml -f k8s/53-country-charts.yaml -f k8s/60-serving.yaml
 if [ "$PROFILE" = "full" ]; then
   k scale statefulset/listener-sim --replicas=3
+  # Full raw-history insights need room for decoded records and snapshot indexes.
+  k set resources deployment/music-api --requests=cpu=100m,memory=256Mi --limits=cpu=500m,memory=1Gi
 fi
 k rollout status deployment/music-api --timeout=10m
 k rollout status deployment/speed-layer --timeout=15m
