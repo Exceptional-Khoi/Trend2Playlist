@@ -282,16 +282,6 @@ def invoke(op,args):
             record.update(test_run_id=RUN,synthetic=True)
             messages.append({'topic':topic,'key':key,'record':record})
         return {'capture_ms':capture,'acks':publish(messages),'records':[m['record'] for m in messages]}
-    if op=='listen_parallel':
-        bodies=args['bodies'];workers=min(int(args.get('workers',2)),4,len(bodies))
-        if len(bodies)>40 or not bodies:raise ValueError('Bounded load:1..40 requests')
-        barrier=threading.Barrier(workers)
-        def work(index):
-            if index<workers:barrier.wait(timeout=10)
-            return http('POST','http://music-api:8000/api/listen',bodies[index])
-        started=time.monotonic()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:responses=list(pool.map(work,range(len(bodies))))
-        return {'responses':responses,'wall_seconds':time.monotonic()-started,'workers':workers}
     if op=='versions':
         import importlib.metadata,platform
         return {'python':platform.python_version(),'packages':{p:importlib.metadata.version(p) for p in ['requests','kafka-python','pyarrow']}}

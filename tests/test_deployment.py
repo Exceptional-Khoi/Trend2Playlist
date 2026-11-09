@@ -40,9 +40,9 @@ def test_pipeline_api_paginates_and_releases_scroll(monkeypatch):
         return httpx.Response(200,json={'_scroll_id':'s','hits':{'hits':[]}})
     monkeypatch.setenv('INSIGHT_BACKEND','elasticsearch')
     monkeypatch.setattr(api,'es',httpx.AsyncClient(transport=httpx.MockTransport(handle),base_url='http://es'))
-    response=TestClient(api.app).get('/api/insights/feedback?as_of=2026-11-05&days=30')
+    response=TestClient(api.app).get('/api/insights/lifecycle?as_of=2026-11-05&days=30')
     assert response.status_code==200
-    assert response.json()['items'][0]['play']==1
+    assert response.json()['input_records']==1
     assert ('DELETE','/_search/scroll') in calls
 
 
@@ -51,4 +51,4 @@ def test_pipeline_failure_never_falls_back_to_archive(monkeypatch):
     from fastapi.testclient import TestClient
     monkeypatch.setenv('INSIGHT_BACKEND','elasticsearch')
     monkeypatch.setattr(api,'es',httpx.AsyncClient(transport=httpx.MockTransport(lambda r:httpx.Response(503)),base_url='http://es'))
-    assert TestClient(api.app).get('/api/insights/feedback').status_code==503
+    assert TestClient(api.app).get('/api/insights/lifecycle').status_code==503

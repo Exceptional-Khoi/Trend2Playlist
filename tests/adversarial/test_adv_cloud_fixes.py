@@ -9,7 +9,7 @@ import pytest
 from .support import event,isolated_function
 
 
-def test_poisoned_raw_document_does_not_hide_valid_feedback(api_env):
+def test_poisoned_raw_document_does_not_hide_valid_records(api_env):
     api_env.monkeypatch.setenv('INSIGHT_BACKEND','elasticsearch')
     rows=[{'_id':'bad-offset','_source':{'value':'{"broken":'}},
           {'_id':'good-offset','_source':{'value':json.dumps(event('good'))}}]
@@ -20,10 +20,10 @@ def test_poisoned_raw_document_does_not_hide_valid_feedback(api_env):
         page=rows if len(seen)==1 else []
         return api_env.httpx.Response(200,json={'_scroll_id':'owned','hits':{'hits':page}})
     api_env.monkeypatch.setattr(api_env.api,'es',api_env.httpx.AsyncClient(transport=api_env.httpx.MockTransport(respond),base_url='http://es.test'))
-    result=api_env.client.get('/api/insights/feedback?as_of=2026-10-01')
+    result=api_env.client.get('/api/insights/lifecycle?as_of=2026-10-01')
     assert result.status_code==200
     body=result.json()
-    assert body['items'][0]['events']==1
+    assert body['input_records']==1
     assert body['data']['partial'] is True and body['data']['invalid_records']==1
     assert body['data']['invalid_document_ids']==['bad-offset'] and 'DELETE' in seen
 
@@ -34,7 +34,7 @@ def test_only_invalid_addressable_raw_records_still_reject(api_env):
     def respond(request):
         return api_env.httpx.Response(200,json={} if request.method=='DELETE' else {'_scroll_id':'s','hits':{'hits':next(pages)}})
     api_env.monkeypatch.setattr(api_env.api,'es',api_env.httpx.AsyncClient(transport=api_env.httpx.MockTransport(respond),base_url='http://es.test'))
-    assert api_env.client.get('/api/insights/feedback').status_code==422
+    assert api_env.client.get('/api/insights/lifecycle').status_code==422
 
 
 def test_batch_checkpoint_is_run_scoped_and_cleanup_refuses_parent(source_root):
@@ -109,7 +109,7 @@ def test_full_profile_isolates_executor_processes_without_starving_batch(source_
     assert speed>0 and batch>0 and speed+batch<=cores*replicas, 'Long-lived speed executors must leave a batch slot'
 
 
-@pytest.mark.parametrize('operation',['hdfs_records','publish','listen_parallel','crawl_apple'])
+@pytest.mark.parametrize('operation',['hdfs_records','publish','crawl_apple'])
 def test_observer_retries_reads_but_never_replays_writes(source_root,tmp_path,monkeypatch,operation):
     import io
     import urllib.error

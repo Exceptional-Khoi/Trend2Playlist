@@ -197,34 +197,6 @@ def test_country_zero_and_top_n(model):
     assert model.compare_country_tastes(rows,['VN','TH'],top_n=3)['items']==[]
 
 
-@case('D01', 'Feedback rates count actions and distinct event IDs, not duration', technique='differential', priority='P0', expected='skip/(play+skip), null for like-only')
-@pytest.mark.parametrize('actions',[['play'],['skip'],['like'],['play','skip','like'],['play','play','skip']])
-def test_feedback_reference(model,actions):
-    rows=[event(str(i),a) for i,a in enumerate(actions)]
-    out=model.summarize_listening_feedback(rows*3)['items'][0]
-    plays,skips=actions.count('play'),actions.count('skip')
-    assert out['events']==len(actions)
-    assert out['skip_rate']==(skips/(plays+skips) if plays+skips else None)
-
-
-@case('D02', 'Source separation, missing IDs, grouping and VN midnight boundaries', technique='equivalence', expected='Only selected source counted, missing ID dropped, UTC+7 hour')
-@pytest.mark.parametrize('group',['track','genre','province','hour'])
-def test_feedback_groups_sources(model,group):
-    rows=[event('1',ts_ms=1790875800000),event('2',source='simulator'),event(None),event('3',source=None)]
-    out=model.summarize_listening_feedback(rows,source='web',group_by=group)
-    assert len(out['items'])==1 and out['items'][0]['events']==1
-    # Hour grouping floors the local timestamp; this is not a minute bucket.
-    if group=='hour':assert out['items'][0]['group']=='2026-10-02 00:00'
-    assert model.summarize_listening_feedback(rows,source='unknown')['items'][0]['events']==1
-
-
-@case('D03', 'Duplicate IDs do not make semantic results depend on arrival order', technique='metamorphic',
-      inputs='Conflicting duplicate same ID: web play vs simulator skip', expected='Deterministic resolution or explicit rejection', risk='Replay order changes source attribution')
-def test_conflicting_duplicate_order(model):
-    rows=[event('same','play','web'),event('same','skip','simulator')]
-    assert model.summarize_listening_feedback(rows)==model.summarize_listening_feedback(rows[::-1])
-
-
 @case('D04', 'Window excludes old/future records without rewriting timestamps', technique='boundary', expected='Inclusive lower and exclusive upper UTC boundaries')
 def test_window_bounds(model):
     low=int(datetime(2026,10,1,tzinfo=timezone.utc).timestamp()*1000)

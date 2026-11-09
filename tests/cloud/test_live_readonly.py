@@ -62,7 +62,8 @@ def test_live_chart_read_consistency(live):
 
 @case('RO-004','Four deployed dashboard insight endpoints remain readable',4,kind='integration',services='API,Elasticsearch',timeout=120)
 def test_live_four_insights_readable(live):
-    results={f:live.read('/api/insights/'+f+'?days=1&top_n=1') for f in ('lifecycle','playlists','countries','feedback')}
+    results={f:live.read('/api/insights/'+f+'?days=1&top_n=1') for f in ('lifecycle','playlists','countries')}
+    assert live.read('/api/comments/tracks?days=1')['status']==200
     live.trace('deployed_feature_responses','OBSERVED',results)
     assert all(r['status']==200 for r in results.values()),{f:r['status'] for f,r in results.items()}
     assert all(r['body']['data']['mode']=='elasticsearch' for r in results.values())

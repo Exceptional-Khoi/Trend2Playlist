@@ -77,7 +77,6 @@ def api_env(monkeypatch, tmp_path, source_root):
     monkeypatch.setattr(insights, 'ROOT', tmp_path)
     monkeypatch.setattr(api, 'STATIC_DIR', str(source_root/'serving/static'))
     monkeypatch.setattr(api, '_cache', {})
-    monkeypatch.setattr(api, '_producer', None)
     async def get_doc(*args):
         return {'title': 'X', 'duration_s': 200, 'artists': ['Artist']}
     monkeypatch.setattr(api, 'get_doc', get_doc)

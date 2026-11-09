@@ -43,8 +43,8 @@ def test_real_es_api(api_env,isolated_services):
     api_env.monkeypatch.setenv('INSIGHT_BACKEND','elasticsearch')
     api_env.monkeypatch.setattr(api_env.api,'es',httpx.AsyncClient(base_url=url,timeout=15))
     try:
-        r=api_env.client.get('/api/insights/feedback?as_of=2026-10-01')
-        assert r.status_code==200 and any(x['group']=='x' and x['play']>=1 for x in r.json()['items'])
+        r=api_env.client.get('/api/insights/lifecycle?as_of=2026-10-01')
+        assert r.status_code==200 and r.json()['input_records']>=1
     finally:requests.delete(url+'/'+index+'/_doc/'+eid+'?refresh=true',timeout=15).raise_for_status()
 
 

@@ -3,3 +3,5 @@
 [hidden]{display:none!important}
 
 .table-tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:20px}.table-tools span{color:#acbad1}button:disabled{opacity:.4;cursor:default}
+
+#results svg{width:100%;background:#152137;border-radius:12px}#results path{fill:#42506a;stroke:#152137;stroke-width:.15}#results path.active{fill:#51ceb2;cursor:pointer}#results path.active:hover{fill:#f0cd7a}#results svg text{font:3px sans-serif;fill:white;paint-order:stroke;stroke:#182738;stroke-width:.8;pointer-events:none;text-anchor:middle}td small{display:block;color:#acbad1}td a{color:#70dfcb;white-space:nowrap}

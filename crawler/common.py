@@ -211,3 +211,22 @@ def playlist_item(playlist_id, playlist_name, genre_hint, crawled_ms, position, 
     if genre_hint and genre_hint not in rec["genres"]:
         rec["genres"] = rec["genres"] + [genre_hint]
     return rec
+
+
+def crawl_markets(session, crawled_ms, fetch_chart):
+    failed = []
+    for country in os.getenv('COUNTRY_MARKETS', 'vn,th,id,us,jp,kr,sg,my,ph,tw,hk,in,au,nz,gb,de,fr,it,es,nl,se,no,fi,dk,pl,ca,mx,br,ar,cl,co,pe,za,tr').split(','):
+        country = country.strip().lower()
+        if not re.fullmatch('[a-z]{2}', country):
+            raise ValueError('Invalid country ISO')
+        count = 0
+        try:
+            for _, _, record in fetch_chart(session, crawled_ms, country):
+                count += 1
+                yield 'music.country-charts', record['platform_id'], record
+        except Exception as exc:
+            logging.getLogger(__name__).warning('%s %s: %s', fetch_chart.__name__, country, exc)
+        if not count:
+            failed.append(country)
+    if failed:
+        raise RuntimeError('Country charts unavailable: ' + ','.join(failed))

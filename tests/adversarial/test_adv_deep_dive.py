@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from .support import case, chart, full_chart, playlist, event, isolated_function
-from .test_adv_api import archive, producer_double
+from .test_adv_api import archive
 
 
 @case('X01','A late partial recrawl does not justify departure or union with old full snapshot',technique='regression/state-transition',priority='P0',expected='No false left_chart; one source period per recrawl')
@@ -30,17 +30,6 @@ def test_three_countries(model):
     for pair in out['overlap']:
         a,b=map(lambda c:set(tracks[c]),pair['countries'])
         assert pair['jaccard']==pytest.approx(len(a&b)/len(a|b))
-
-
-@case('X03','Malformed track metadata cannot crash even archive button requests',technique='HTTP/fuzz',expected='Controlled validation/dependency error or sanitized event, never 500')
-@pytest.mark.parametrize('mode',['archive','elasticsearch'])
-@pytest.mark.parametrize('duration',['not-a-number',float('inf'),{'seconds':200}])
-def test_listen_corrupt_metadata(api_env,mode,duration):
-    archive(api_env,[chart()]);api_env.monkeypatch.setenv('INSIGHT_BACKEND',mode)
-    async def document(*a):return {'duration_s':duration,'title':'X'}
-    api_env.monkeypatch.setattr(api_env.api,'get_doc',document);producer_double(api_env)
-    response=api_env.client.post('/api/listen',json={'user_id':'u','province_code':'ha-noi','track_key':'x'})
-    assert response.status_code in (200,400,422,503)
 
 
 @case('X04','Real HTTP adapter retries selected status codes, not auth/not-found',technique='loopback HTTP/fault-injection',expected='3 attempts for 429/503, 1 for 401/403/404; no external calls',environment='stdlib loopback HTTP server; requests transport real')

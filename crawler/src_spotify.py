@@ -138,17 +138,5 @@ def crawl_kworb_daily(session, crawled_ms, country=os.getenv("KWORB_COUNTRY", "v
 
 
 def crawl_countries(session, crawled_ms):
-    failed = []
-    for country in os.getenv('COUNTRY_MARKETS', 'vn,th,id,us,jp').split(','):
-        country = country.strip().lower()
-        if not re.fullmatch('[a-z]{2}', country):
-            raise ValueError('Invalid country ISO')
-        count = 0
-        for _, _, rec in crawl_kworb_daily(session, crawled_ms, country):
-            count += 1
-            # Separate topic: foreign charts must not enter the VN national score.
-            yield 'music.country-charts', rec['platform_id'], rec
-        if not count:
-            failed.append(country)
-    if failed:
-        raise RuntimeError('Country charts unavailable: ' + ','.join(failed))
+    from common import crawl_markets
+    yield from crawl_markets(session, crawled_ms, crawl_kworb_daily)

@@ -1,4 +1,4 @@
-"""Four evidence-based analyses specified in docs/07. No inferred listening duration."""
+"""Chart, playlist and country analyses."""
 from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
 from itertools import combinations
@@ -7,11 +7,10 @@ from statistics import median
 import json
 import os
 import re
-import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-_archive_lock = threading.Lock()
+
 
 
 def canonical(record):
@@ -52,11 +51,8 @@ def normalize(raw):
     if not isinstance(raw, dict):
         raise ValueError('Record must be a JSON object')
     r = dict(raw['value'] if isinstance(raw.get('value'), dict) else raw)
-    if 'record_type' not in r:
-        if r.get('action'):
-            r['record_type'] = 'event'
-        elif r.get('rank') and r.get('chart_id'):
-            r['record_type'] = 'chart_entry'
+    if 'record_type' not in r and r.get('rank') and r.get('chart_id'):
+        r['record_type'] = 'chart_entry'
     return r
 
 
@@ -64,18 +60,16 @@ def load_local():
     """Read explicit archives, not fabricated fixtures or arbitrary temporary files."""
     paths = list((ROOT / 'out').glob('country-*/records/*.jsonl'))
     paths += list((ROOT / 'out-test').glob('*/charts/*.jsonl'))
-    paths += list((ROOT / 'out').glob('music.*.jsonl'))
-    paths += list((ROOT / 'out-test').glob('*/music.*.jsonl'))
+    paths += [ROOT / 'out' / f'music.{topic}.jsonl'
+              for topic in ('charts', 'playlists', 'country-charts')]
+    paths += [run / f'music.{topic}.jsonl'
+              for run in (ROOT / 'out-test').iterdir() if run.is_dir()
+              for topic in ('charts', 'playlists', 'country-charts')]
     extra = os.getenv('INSIGHT_DATA_DIR')
     if extra:
         paths += list(Path(extra).rglob('*.jsonl'))
-    if (ROOT / 'output/user_events.jsonl').exists():
-        paths.append(ROOT / 'output/user_events.jsonl')
-    local_events = ROOT / 'out/insight-web-events.jsonl'
-    if local_events.exists():
-        paths.append(local_events)
     records, errors, seen = [], [], set()
-    for path in sorted(set(paths)):
+    for path in sorted(path for path in set(paths) if path.is_file()):
         for n, line in enumerate(path.read_text(encoding='utf-8-sig').splitlines(), 1):
             if not line.strip():
                 continue
@@ -89,35 +83,6 @@ def load_local():
                 errors.append(f'{path.name}:{n}: {type(exc).__name__}')
     return records, {'mode': 'archive', 'files': len(set(paths)), 'errors': errors,
                      'note': 'Dữ liệu lưu trữ; không tự đổi ngày cũ thành hôm nay.'}
-
-
-def append_web_event(event):
-    """Serialize append across threads/processes; acknowledge only after flush/fsync."""
-    line = (json.dumps(event, ensure_ascii=False, allow_nan=False) + '\n').encode('utf-8')
-    path = ROOT / 'out/insight-web-events.jsonl'
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with _archive_lock, path.with_suffix('.lock').open('a+b') as lock:
-        if os.name == 'nt':
-            import msvcrt
-            lock.seek(0, os.SEEK_END)
-            if lock.tell() == 0:
-                lock.write(b'0'); lock.flush()
-            lock.seek(0)
-            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        try:
-            with path.open('ab') as output:
-                output.write(line)
-                output.flush()
-                os.fsync(output.fileno())
-        finally:
-            if os.name == 'nt':
-                lock.seek(0)
-                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def window(records, days, as_of=None):
@@ -213,7 +178,7 @@ def analyze_track_lifecycle(records, track_key=None):
                         status, reason = 'left_chart', 'Không xuất hiện ở kỳ tiếp theo đã crawl đủ hạng; chỉ kết luận rời BXH này.'
             times = sorted(timestamp(r) for r in observations if timestamp(r))
             output.append({'track_id': track, 'title': observations[0].get('title'), 'source': group[4] or group[0], 'data_provider': group[0],
-                           'chart_id': group[1], 'country': group[2], 'best_rank': min(r['rank'] for r in observations),
+                           'url': observations[-1].get('url'), 'artists': observations[-1].get('artists'), 'chart_id': group[1], 'country': group[2], 'best_rank': min(r['rank'] for r in observations),
                            'periods': len(known), 'observations': len(observations), 'status': status, 'reason': reason,
                            'first_observed': times[0].isoformat() if times else None,
                            'tracking_days': (times[-1] - times[0]).days if times else 0,
@@ -326,45 +291,84 @@ def compare_country_tastes(records, countries, chart_date=None, top_n=50):
             'note': 'Spotify qua Kworb, cùng BXH ngày. Tỷ trọng stream chỉ trong BXH đã crawl. Ô trống là không có trong BXH, không phải 0 stream.'}
 
 
-def summarize_listening_feedback(records, source='web', group_by='track'):
-    groups = defaultdict(list)
-    seen, source_counts = set(), Counter()
-    events, conflicts = {}, set()
-    for r in records:
-        eid = r.get('event_id')
-        if not eid:
+def song_key(row):
+    artists = row.get('artists') or []
+    artist = artists[0] if isinstance(artists, list) and artists else artists
+    if isinstance(row.get('title'), str) and artist:
+        return (row['title'].strip().casefold(), str(artist).strip().casefold())
+    return (row.get('source') or '', identity(row))
+
+
+def song_info(row):
+    return {k: row.get(k) for k in ('title', 'artists', 'url')}
+
+
+def playlist_ranking(records):
+    captures = defaultdict(list)
+    for row in records:
+        if row.get('record_type') != 'playlist_item' or row.get('playlist_type') == 'chart_mirror':
             continue
-        if eid in events and canonical(events[eid]) != canonical(r):
-            conflicts.add(eid)
-        else:
-            events[eid] = r
-    for eid in conflicts:
-        events.pop(eid, None)
-    for _, r in sorted(events.items()):
-        if r.get('action') not in ('play', 'skip', 'like'):
+        if row.get('playlist_id') and identity(row):
+            captures[(row.get('source'), row['playlist_id'], timestamp(row))].append(row)
+    memberships = defaultdict(set)
+    songs = {}
+    for (source, playlist, _), rows in captures.items():
+        observed = len({identity(r) for r in rows})
+        reported = max((r['playlist_size'] for r in rows if type(r.get('playlist_size')) is int), default=0)
+        if max(observed, reported) < 5:
             continue
-        if not r.get('event_id') or r['event_id'] in seen:
+        for row in rows:
+            key = song_key(row)
+            memberships[key].add((source, playlist))
+            songs[key] = song_info(row)
+    return {'items': [dict(songs[k], playlist_count=len(memberships[k])) for k in
+                      sorted(songs, key=lambda k: (-len(memberships[k]), k))]}
+
+
+def country_winners(records, countries, days, end):
+    start = end - timedelta(days=days-1)
+    charts = {}
+    for rows in chart_snapshots(records):
+        row = rows[0]
+        country = row.get('country_code') or row.get('chart_scope')
+        if not re.fullmatch('[A-Z]{2}', country or '') or row.get('chart_id') in ('youtube_geo_search', 'zing_new_release'):
             continue
-        seen.add(r['event_id'])
-        src = r.get('source') or 'unknown'
-        source_counts[src] += 1
-        if src != source:
+        if not complete(rows):
             continue
-        key = {'track': r.get('track_key') or r.get('track_id'), 'genre': r.get('genre'),
-               'province': r.get('province_code') or r.get('province'),
-               'hour': (timestamp(r) + timedelta(hours=7)).strftime('%Y-%m-%d %H:00') if timestamp(r) else None}[group_by]
-        groups[key or 'unknown'].append(r)
+        period = row.get('source_period') or timestamp(row).date().isoformat()
+        if not start.isoformat() <= period <= end.isoformat():
+            continue
+        key = (country, period, row.get('source'), row.get('chart_id'))
+        charts[key] = rows
+    scores = defaultdict(dict)
+    songs = {}
+    for (country, day, source, _), rows in charts.items():
+        size = max(r.get('chart_size') or r['rank'] for r in rows)
+        votes = scores[country, day, source]
+        for r in rows:
+            metric = r.get('metric_value')
+            if isinstance(metric, float) and not isfinite(metric):
+                raise ValueError('Non-finite chart metric')
+            song = song_key(r)
+            votes[song] = max(votes.get(song, 0), (size-r['rank']+1)/size)
+            songs[country, song] = song_info(r)
+    daily = defaultdict(list)
+    for (country, day, _), votes in scores.items():
+        daily[country, day].append(votes)
+    totals = defaultdict(Counter)
+    counts = Counter()
+    for (country, _), sources in daily.items():
+        counts[country] += 1
+        for votes in sources:
+            totals[country].update({k:v/len(sources) for k,v in votes.items()})
     items = []
-    for key, rows in groups.items():
-        c = Counter(r['action'] for r in rows)
-        denominator = c['play'] + c['skip']
-        items.append({'group': key, 'title': rows[0].get('title') if group_by == 'track' else key,
-                      'play': c['play'], 'skip': c['skip'], 'like': c['like'],
-                      'skip_rate': c['skip'] / denominator if denominator else None,
-                      'users': len({r['user_id'] for r in rows if r.get('user_id')}), 'events': len(rows)})
-    return {'items': sorted(items, key=lambda x: (-x['events'], str(x['group']))), 'source': source, 'source_counts': dict(source_counts),
-            'conflicting_event_ids': sorted(conflicts),
-            'note': 'Đếm thao tác, không đếm phiên nghe. skip/(play+skip); không tính thời lượng/hoàn tất. User ID chưa chứng minh người thật riêng biệt. Nguồn thiếu nhãn được giữ unknown.'}
+    for country in sorted(totals):
+        if countries and country not in countries:
+            continue
+        scores = totals[country]
+        winner = min(scores, key=lambda k: (-scores[k], k))
+        items.append(dict(songs[country, winner], country=country, score=scores[winner]/counts[country]))
+    return {'items': items, 'available_countries': sorted(totals)}
 
 
 def analyze(records, feature, days=30, as_of=None, **params):
@@ -372,13 +376,10 @@ def analyze(records, feature, days=30, as_of=None, **params):
     if feature == 'lifecycle':
         result = analyze_track_lifecycle(filtered, params.get('track'))
     elif feature == 'playlists':
-        result = analyze_playlist_exposure(filtered, params.get('genre'))
+        result = playlist_ranking(filtered)
     elif feature == 'countries':
-        result = compare_country_tastes(filtered, params.get('countries', ['VN', 'TH']), params.get('chart_date'), params.get('top_n', 50))
-    elif feature == 'feedback':
-        result = summarize_listening_feedback(filtered, params.get('source', 'web'), params.get('group_by', 'track'))
-        catalog = {r.get('track_key') or identity(r): r for r in filtered if r.get('record_type') == 'chart_entry'}
-        result['catalog'] = [{'key': k, 'title': r.get('title') or k} for k, r in list(catalog.items())[:500] if k]
+        end = datetime.fromisoformat(as_of).date() if as_of else datetime.now(timezone.utc).date()
+        result = country_winners([r for r in records if timestamp(r) and timestamp(r).date() <= end], params.get('countries'), days, end)
     else:
         raise ValueError('Unknown feature')
     result.update({'window_days': days, 'as_of': as_of or datetime.now(timezone.utc).date().isoformat(),

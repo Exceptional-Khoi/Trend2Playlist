@@ -38,7 +38,7 @@ spec:
             - name: POD_IP
               valueFrom: { fieldRef: { fieldPath: status.podIP } }
             - { name: DRIVER_MEMORY, value: "700m" }
-            - { name: SPEED_QUERIES, value: "ingest,plays,mentions,charts,recommend" }
+            - { name: SPEED_QUERIES, value: "ingest,plays,mentions,comments,charts,recommend" }
           ports:
             - { name: ui, containerPort: 4040 }
           resources:

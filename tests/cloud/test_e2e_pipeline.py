@@ -19,11 +19,6 @@ def hits(stack,index,query):
     return response['body']['hits']['hits']
 
 
-def feedback(data,track,count):
-    body=data.ready('feedback',lambda b:any(x['group']==track and x['events']>=count for x in b['items']))
-    return next(x for x in body['items'] if x['group']==track)
-
-
 def await_query_offsets(stack,name,acks):
     def covered(checkpoints):
         offsets={}
@@ -142,39 +137,15 @@ def test_country_independent_set_oracle(stack,dataset):
                 assert math.isclose(value['chart_stream_share'],1/3)
 
 
-@case('CE-007','Actual listen POST acknowledgements and feedback actions',60)
-def test_listen_full_pipeline(stack,dataset):
-    track,events,acks,_=dataset.listen(['play','skip','like'])
-    assert all(e['listen_ms'] is None and e['duration_ms'] is None for e in events)
-    stack.await_records(acks)
-    row=feedback(dataset,track,3)
-    assert (row['play'],row['skip'],row['like'],row['users'])==(1,1,1,3)
-    assert row['skip_rate']==.5
-
-
-@case('CE-008','Synchronized real HTTP concurrency preserves each event',70)
-def test_concurrent_listen(stack,dataset):
-    actions=['play','skip','like','play']*4
-    track,events,acks,result=dataset.listen(actions,workers=4)
-    assert len({e['event_id'] for e in events})==16
-    stack.await_records(acks)
-    row=feedback(dataset,track,16)
-    assert (row['play'],row['skip'],row['like'],row['users'])==(8,4,4,16)
-    assert math.isclose(row['skip_rate'],1/3)
-    stack.trace('concurrency','MEASURED',result)
-
-
 @case('CE-009','Logical replay on distinct partitions agrees between realtime and insight',80)
 def test_logical_duplicate_across_partitions(stack,dataset):
     event=dataset.event('replay');acks=[]
     for partition in (0,1):acks+=dataset.publish([event],'music.events',partition=partition)
     stack.await_records(acks)
-    row=feedback(dataset,event['track_key'],1)
-    assert row['play']==1
     await_query_offsets(stack,'plays',acks)
     realtime=poll(lambda:hits(stack,'music-rt-plays',{'match':{'track_key':event['track_key']}}),timeout=120,interval=3,guard=stack.guard)
     stack.trace('realtime_documents','OBSERVED',realtime)
-    assert sum(x['_source']['plays'] for x in realtime)==row['play'],'Realtime double-counts the same logical event across Kafka offsets'
+    assert sum(x['_source']['plays'] for x in realtime)==1,'Realtime double-counts the same logical event across Kafka offsets'
 
 
 @case('CE-010','Late chart microbatch must not replace a newer published snapshot',90)
@@ -213,7 +184,6 @@ def test_event_time_windows(stack,dataset):
 def test_additive_schema(stack,dataset):
     row=dataset.event('extra',future_schema={'unicode':'Đêm 🎵','nested':[None,{'x':1}]})
     acks=dataset.publish([row],'music.events');stack.await_records(acks)
-    assert feedback(dataset,row['track_key'],1)['play']==1
     rt=poll(lambda:hits(stack,'music-rt-plays',{'match':{'track_key':row['track_key']}}),timeout=120,interval=3,guard=stack.guard)
     assert sum(r['_source']['plays'] for r in rt)==1
 
@@ -247,9 +217,9 @@ def test_malformed_poison_pill_isolation(stack,dataset):
     try:
         acks=stack.publish([bad]+dataset.messages([valid],'music.events'))
         stack.await_records(acks)
-        response=dataset.insights('feedback');stack.trace('poison_api','OBSERVED',response)
-        assert response['status']==200,'A single malformed Kafka message made all valid feedback unavailable'
-        assert any(x['group']==valid['track_key'] and x['play']==1 for x in response['body']['items'])
+        response=dataset.insights('lifecycle');stack.trace('poison_api','OBSERVED',response)
+        assert response['status']==200,'A single malformed Kafka message made chart analysis unavailable'
+        assert response['body']['data']['partial'] is True
     finally:
         # Delete only the poisoned raw document in this owned, ephemeral ES instance.
         if acks:

@@ -22,7 +22,8 @@ spec:
               envFrom:
                 - configMapRef: { name: music-env }
               env:
-                - { name: FAIL_ON_PARTIAL, value: "true" }
+                # Keep charts from available markets when one provider skips a country.
+                - { name: FAIL_ON_PARTIAL, value: "false" }
               resources:
                 requests: { cpu: 100m, memory: 128Mi }
                 limits: { memory: 384Mi }

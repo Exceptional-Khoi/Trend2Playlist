@@ -28,14 +28,6 @@ def test_analysis_scaling(model,count,tmp_path):
     with path.open('a',encoding='utf-8') as f:f.write(json.dumps(report)+'\n')
 
 
-@case('J04','High-cardinality users and duplicate-heavy batches preserve exact counts',technique='stress/metamorphic',inputs='5000 user IDs and 50000 rows',expected='5000 unique users and 5000 events after dedup')
-@pytest.mark.qa_performance
-def test_feedback_stress(model):
-    rows=[event(str(i),user_id='user-'+str(i)) for i in range(5000)]
-    item=model.summarize_listening_feedback(rows*10)['items'][0]
-    assert item['users']==item['events']==5000
-
-
 @case('J05','Repeated analyses remain semantically stable and do not mutate inputs',technique='repeatability/metamorphic',expected='Same output for 20 invocations; input unchanged')
 def test_repeated_analysis(model):
     rows=full_chart(['a','b'])+full_chart(['b','c'],'TH')
@@ -48,7 +40,7 @@ def test_repeated_analysis(model):
 def test_archive_permissions(api_env):
     def denied():raise PermissionError('injected archive denied')
     api_env.monkeypatch.setattr(api_env.model,'load_local',denied)
-    assert api_env.client.get('/api/insights/feedback').status_code==503
+    assert api_env.client.get('/api/insights/lifecycle').status_code==503
 
 
 @case('J07','Extremely long untrusted names remain literal JSON data',technique='HTTP/security/stress',expected='No execution or corrupt response')

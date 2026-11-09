@@ -26,9 +26,9 @@ TOP100_LIMIT = int(os.getenv("ZING_TOP100_LIMIT", "40"))
 class ZingClient:
     def __init__(self, session):
         self.s = session
-        self.version = os.getenv("ZING_VERSION", "1.6.34")
-        self.api_key = os.getenv("ZING_API_KEY", "88265e23d4284f25963e6eedac8fbfa3")
-        self.secret = os.getenv("ZING_SECRET_KEY", "2aa2d1c561e809b267f3638c4a307aab")
+        self.version = os.getenv("ZING_VERSION") or "1.6.34"
+        self.api_key = os.getenv("ZING_API_KEY") or "88265e23d4284f25963e6eedac8fbfa3"
+        self.secret = os.getenv("ZING_SECRET_KEY") or "2aa2d1c561e809b267f3638c4a307aab"
         self._cookie_ready = False
 
     def _sig(self, path, params):

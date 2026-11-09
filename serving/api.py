@@ -1,10 +1,8 @@
 """SERVING LAYER - REST API + dashboard web.
 
-Đọc batch view và realtime view trong Elasticsearch rồi GỘP lại lúc truy vấn (đúng tinh thần
-Lambda: query = f(batch view, realtime view)). Nhận lượt nghe từ giao diện web và đẩy vào Kafka
-để vòng gợi ý realtime khép kín: bấm nghe -> Kafka -> Spark -> ES -> playlist mới.
+Phục vụ bảng xếp hạng, playlist, bản đồ âm nhạc và báo cáo bình luận.
 
-Chạy cục bộ:  uvicorn api:app --port 8000   (cần ES_URL, KAFKA_BOOTSTRAP)
+Chạy cục bộ:  uvicorn api:app --port 8000
 """
 import asyncio
 import json
@@ -12,16 +10,17 @@ import os
 import re
 import sys
 import time
-import uuid
 from contextlib import asynccontextmanager
-from typing import Optional
+from datetime import date
+from typing import Literal, Optional
 from urllib.parse import quote
 
+import comment_topics
 import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import insights
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -44,8 +43,6 @@ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ
 VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW'''.split())
 
 ES_URL = os.getenv("ES_URL", "http://localhost:9200")
-KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
-TOPIC_EVENTS = os.getenv("TOPIC_EVENTS", "music.events")
 STATIC_DIR = os.getenv("STATIC_DIR", os.path.join(HERE, "static"))
 # trọng số gộp batch view + realtime view
 W_BATCH, W_RT_PLAYS, W_RT_MENTIONS = (float(x) for x in os.getenv("MERGE_WEIGHTS", "0.6,0.3,0.1").split(","))
@@ -65,7 +62,6 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="VN Music Pulse API", version="1.0", lifespan=lifespan)
-_producer = None
 _cache = {}
 
 
@@ -109,16 +105,6 @@ def insight_backend():
     if mode not in ('archive', 'elasticsearch'):
         raise HTTPException(503, 'INSIGHT_BACKEND phải là archive hoặc elasticsearch')
     return mode
-
-
-def producer():
-    global _producer
-    if _producer is None:
-        from kafka import KafkaProducer
-        _producer = KafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP.split(","), acks="all", retries=5, linger_ms=5,
-                                  key_serializer=lambda k: k.encode(),
-                                  value_serializer=lambda v: json.dumps(v, ensure_ascii=False, allow_nan=False).encode())
-    return _producer
 
 
 # ------------------------------------------------------------------ hệ thống
@@ -377,60 +363,6 @@ async def users(province: Optional[str] = None, limit: int = Query(30, ge=1, le=
     return {"items": sources(res)}
 
 
-class Listen(BaseModel):
-    user_id: str
-    province_code: str
-    track_key: str
-    action: str = "play"
-
-
-@app.post("/api/listen")
-async def listen(ev: Listen):
-    if ev.province_code not in PROVINCE_BY_CODE or ev.action not in ("play", "skip", "like"):
-        raise HTTPException(400, "province_code/action không hợp lệ")
-    if not ev.user_id.strip() or len(ev.user_id) > 100 or not ev.track_key.strip() or len(ev.track_key) > 1024:
-        raise HTTPException(400, 'Bài hát hoặc mã người dùng không hợp lệ')
-    mode = insight_backend()
-    if mode == 'archive':
-        try:
-            records, _ = await asyncio.to_thread(insights.load_local)
-        except OSError as exc:
-            raise HTTPException(503, 'Không đọc được dữ liệu archive') from exc
-        track = next((r for r in records if (r.get('track_key') or insights.identity(r)) == ev.track_key
-                      and r.get('record_type') == 'chart_entry'), None)
-    else:
-        try:
-            track = await get_doc('music-tracks', ev.track_key)
-        except (httpx.HTTPError, OSError) as exc:
-            raise HTTPException(503, 'Không tra cứu được bài hát') from exc
-    if not track:
-        raise HTTPException(404, 'Bài hát không tồn tại trong catalog')
-    if not isinstance(track, dict):
-        raise HTTPException(422, 'Metadata bài hát không đúng schema')
-    ts = now_ms()
-    event = {"event_id": str(uuid.uuid4()), "user_id": ev.user_id, "province_code": ev.province_code,
-             "track_key": ev.track_key, "title": track.get("title", ev.track_key), "artists": track.get("artists", []),
-             "genre": track.get("genre_hint") or track.get("genre", "unknown"), "duration_ms": None, "source": "web", "action": ev.action,
-             "listen_ms": None, "ts_ms": ts}
-    try:
-        json.dumps(event, allow_nan=False)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(422, 'Metadata bài hát không đúng schema') from exc
-    if mode == 'archive':
-        # Actual button clicks in local mode, explicitly separate from Kafka delivery.
-        try:
-            await asyncio.to_thread(insights.append_web_event, event)
-        except OSError as exc:
-            raise HTTPException(503, 'Không ghi được event archive') from exc
-        return {'event': event, 'mode': 'archive', 'produced_at': now_ms()}
-    try:
-        meta = await asyncio.to_thread(lambda: producer().send(TOPIC_EVENTS, key=ev.user_id, value=event).get(timeout=10))
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(503, f"Kafka không sẵn sàng: {e}")
-    return {"event": event, "kafka": {"topic": meta.topic, "partition": meta.partition, "offset": meta.offset},
-            "produced_at": now_ms()}
-
-
 @app.get("/api/search")
 async def search_tracks(q: str, limit: int = Query(20, ge=1, le=50)):
     nq = norm_text(q)
@@ -460,14 +392,14 @@ async def index():
 
 @app.get("/api/insights/{feature}")
 async def insight_api(feature: str, days: int = Query(30, ge=1, le=365), as_of: Optional[str] = None,
-                      countries: str = 'VN,TH', chart_date: Optional[str] = None,
-                      top_n: int = Query(50, ge=1, le=200), source: str = 'web',
-                      group_by: str = 'track', track: Optional[str] = None, genre: Optional[str] = None):
-    if feature not in ('lifecycle', 'playlists', 'countries', 'feedback') or source not in ('web', 'simulator', 'unknown') or group_by not in ('track', 'genre', 'province', 'hour'):
-        raise HTTPException(400, 'Bộ lọc không hợp lệ')
+                      countries: str = '', chart_date: Optional[str] = None,
+                      top_n: int = Query(50, ge=1, le=200),
+                      track: Optional[str] = None, genre: Optional[str] = None):
+    if feature not in ('lifecycle', 'playlists', 'countries'):
+        raise HTTPException(404, 'Không tìm thấy tính năng')
     cs = list(dict.fromkeys(c.strip().upper() for c in countries.split(',') if c.strip()))
-    if not 2 <= len(cs) <= 10 or any(c not in COUNTRY_CODES for c in cs):
-        raise HTTPException(400, 'Chọn từ 2 đến 10 mã quốc gia ISO')
+    if any(c not in COUNTRY_CODES for c in cs):
+        raise HTTPException(400, 'Quốc gia không hợp lệ')
     try:
         for d in (as_of, chart_date):
             if d:
@@ -533,10 +465,48 @@ async def insight_api(feature: str, days: int = Query(30, ge=1, le=365), as_of: 
             raise HTTPException(503, 'Không đọc được dữ liệu archive') from exc
     try:
         result = await asyncio.to_thread(insights.analyze, records, feature, days, as_of,
-                                        countries=cs, chart_date=chart_date, top_n=top_n, source=source,
-                                        group_by=group_by, track=track, genre=genre)
+                                        countries=cs, chart_date=chart_date, top_n=top_n,
+                                        track=track, genre=genre)
         json.dumps(result, allow_nan=False)
     except (ValueError, TypeError, KeyError, OverflowError, OSError) as exc:
         raise HTTPException(422, f'Dữ liệu không đúng schema: {type(exc).__name__}')
     result['data'] = metadata
     return result
+
+class CommentRequest(BaseModel):
+    track: str = Field(min_length=1, max_length=1024)
+    as_of: Optional[date] = None
+    days: int = Field(default=7, ge=1, le=365)
+    sort: Literal['recent','popular','all'] = 'all'
+    limit: int = Field(default=50, ge=1, le=500)
+
+
+@app.get('/api/comments/tracks')
+async def comment_tracks(days: int = Query(7, ge=1, le=365), as_of: Optional[date] = None,
+                         sort: Literal['recent','popular','all'] = 'all'):
+    start, end = comment_topics.bounds(as_of, days)
+    try:
+        backend = es if insight_backend() == 'elasticsearch' else None
+        tracks = await comment_topics.select_comments(backend,start,end,None,sort,0)
+        if not tracks and as_of is None:
+            latest = await comment_topics.latest_day(backend, sort)
+            if latest:
+                start, end = comment_topics.bounds(latest, days)
+                tracks = await comment_topics.select_comments(backend,start,end,None,sort,0)
+    except (OSError, ValueError, httpx.HTTPError, comment_topics.sqlite3.Error):
+        raise HTTPException(503,'Chưa đọc được bình luận.')
+    return {'items':[{'key':k,'title':v} for k,v in tracks], 'as_of':comment_topics.utc_day(end-1)}
+
+
+@app.post('/api/comments/report')
+async def comment_report(request: CommentRequest):
+    start, end = comment_topics.bounds(request.as_of, request.days)
+    try:
+        rows = await comment_topics.select_comments(es if insight_backend()=='elasticsearch' else None,
+                                                   start,end,request.track,request.sort,request.limit)
+        if not rows:
+            raise HTTPException(404,'Chưa có bình luận cho lựa chọn này.')
+        return await comment_topics.summarize(rows,dict(track=request.track, start_ms=start,end_ms=end,
+            sort=request.sort, sample_sorts=sorted({r.get('comment_sort') or 'unknown' for r in rows})))
+    except (OSError, ValueError, KeyError, IndexError, httpx.HTTPError, comment_topics.sqlite3.Error):
+        raise HTTPException(502,'Chưa thể hoàn tất báo cáo bình luận. Vui lòng thử lại.')

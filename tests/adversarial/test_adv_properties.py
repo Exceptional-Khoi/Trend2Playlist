@@ -31,20 +31,6 @@ def test_country_duplicate_invariance(model,ids):
     assert duplicate['overlap']==base['overlap']
 
 
-@case('P03','Feedback survives duplicate replay and reordering for consistent IDs',technique='property/metamorphic',priority='P0',inputs='200 generated action sequences',expected='Same counts, independent reference rate, rates bounded')
-@pytest.mark.qa_property
-@settings(max_examples=200,deadline=None)
-@given(st.lists(st.sampled_from(['play','skip','like']),min_size=1,max_size=60))
-def test_feedback_replay(model,actions):
-    rows=[event(str(i),action=a) for i,a in enumerate(actions)]
-    base=model.summarize_listening_feedback(rows)['items'][0]
-    replay=model.summarize_listening_feedback((rows+rows)[::-1])['items'][0]
-    assert base==replay
-    denominator=actions.count('play')+actions.count('skip')
-    expected=actions.count('skip')/denominator if denominator else None
-    assert base['skip_rate']==expected
-
-
 @case('P04','Playlist placement follows logarithmic sum for arbitrary positive positions',technique='property/differential',inputs='150 position lists',expected='Independent math.fsum oracle')
 @pytest.mark.qa_property
 @settings(max_examples=150,deadline=None)

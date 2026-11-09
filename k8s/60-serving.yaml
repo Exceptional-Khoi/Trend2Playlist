@@ -31,6 +31,15 @@ spec:
           command: ["sh", "-c", "pip install -q --no-cache-dir -r /app/requirements.txt && exec uvicorn api:app --host 0.0.0.0 --port 8000 --proxy-headers"]
           envFrom: [{ configMapRef: { name: music-env } }]
           env:
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef: { name: music-secrets, key: OPENAI_API_KEY, optional: true }
+            - name: OPENAI_MODEL
+              valueFrom:
+                secretKeyRef: { name: music-secrets, key: OPENAI_MODEL, optional: true }
+            - name: COMMENT_DAILY_LIMIT
+              valueFrom:
+                secretKeyRef: { name: music-secrets, key: COMMENT_DAILY_LIMIT, optional: true }
             - { name: INSIGHT_BACKEND, value: elasticsearch }
             - { name: STATIC_DIR, value: /static }
             - { name: MERGE_WEIGHTS, value: "0.6,0.3,0.1" }

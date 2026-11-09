@@ -21,7 +21,7 @@ from jobs_common import (CKPT, COMMENT_SCHEMA, CHART_SCHEMA, EVENT_SCHEMA, KAFKA
                          es_put, es_write, es_write_latest, get_spark, mention_udf, mention_weight_col, now_ms, read_view)
 
 spark = get_spark("music-speed-layer")
-QUERIES = [q.strip() for q in os.getenv("SPEED_QUERIES", "ingest,plays,mentions,charts,recommend").split(",") if q.strip()]
+QUERIES = [q.strip() for q in os.getenv("SPEED_QUERIES", "ingest,plays,mentions,comments,charts,recommend").split(",") if q.strip()]
 STARTING = os.getenv("STARTING_OFFSETS", "earliest")
 
 
@@ -77,7 +77,7 @@ started = []
 # Full raw records retain source periods and playlist classification, independent of
 # the legacy VN-only parsed schemas. Topic/partition/offset makes replay idempotent.
 if "ingest" in QUERIES:
-    insight_raw = (kafka_stream([TOPICS['charts'], TOPICS['playlists'], TOPICS['events'], 'music.country-charts'])
+    insight_raw = (kafka_stream([TOPICS['charts'], TOPICS['playlists'], 'music.country-charts'])
                    .select(F.concat_ws(':', 'topic', F.col('partition').cast('string'),
                                        F.col('offset').cast('string')).alias('doc_id'),
                            F.col('value').cast('string').alias('value')))
@@ -118,7 +118,19 @@ if "plays" in QUERIES:
                    .option("checkpointLocation", os.getenv("PLAYS_CHECKPOINT_PATH") or CKPT + "/plays-v2")
                    .trigger(processingTime=os.getenv("PLAYS_TRIGGER", "10 seconds")).start())
 
-# ---------------------------------------------------------------- 3) bình luận nhắc tỉnh
+# ---------------------------------------------------------------- 3) bình luận
+if "comments" in QUERIES:
+    comments = parsed("comments", COMMENT_SCHEMA).where("comment_id IS NOT NULL AND text IS NOT NULL")
+    def write_comment_sample(df, _):
+        sample = df.where("published_ms IS NOT NULL AND trim(text) != ''").select(
+            F.concat_ws('|', 'track_key', 'comment_id', 'comment_sort').alias('doc_id'),
+            'track_key', 'title', 'video_id', 'comment_id', 'comment_sort', 'published_ms', 'text')
+        es_write(sample, 'music-comments', 'doc_id')
+
+    started.append(comments.writeStream.queryName('comment_samples').foreachBatch(write_comment_sample)
+                   .option('checkpointLocation', CKPT + '/comment-samples').start())
+
+# ---------------------------------------------------------------- 4) bình luận nhắc tỉnh
 if "mentions" in QUERIES:
     comments = parsed("comments", COMMENT_SCHEMA).where("comment_id IS NOT NULL AND text IS NOT NULL")
     # 'self' = người viết tự nhận ở tỉnh đó (trọng số 1), 'mention' = chỉ nhắc tên (0.3);

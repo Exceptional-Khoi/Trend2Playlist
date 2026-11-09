@@ -56,22 +56,3 @@ class Data:
         self.stack.trace('catalog_precondition','SEEDED',{'index':'music-tracks','id':track,'body':row,
                          'note':'Controlled metadata precondition, not proof of crawler-to-batch catalog'})
         return track
-
-    def listen(self,actions,track=None,workers=1):
-        track=track or self.seed_catalog()
-        bodies=[{'user_id':self.prefix+'-u'+str(i),'province_code':'ha-noi','track_key':track,'action':a} for i,a in enumerate(actions)]
-        result=self.stack.rpc('listen_parallel',{'bodies':bodies,'workers':workers},timeout=120)
-        self.stack.trace('api_produce','OBSERVED',{'requests':bodies,**result})
-        assert all(r['status']==200 for r in result['responses']),result
-        events=[r['body']['event'] for r in result['responses']]
-        positions=[{**r['body']['kafka'],'doc_id':r['body']['kafka']['topic']+':'+str(r['body']['kafka']['partition'])+':'+str(r['body']['kafka']['offset']),
-                    'value':json.dumps(e,ensure_ascii=False)} for r,e in zip(result['responses'],events)]
-        observed=self.stack.rpc('observe',{'positions':positions},timeout=90)
-        # Producer serialization may use different whitespace: compare JSON values independently.
-        assert {json.loads(r['value'])['event_id'] for r in observed}=={e['event_id'] for e in events}
-        for position in positions:
-            actual=next(r for r in observed if (r['topic'],r['partition'],r['offset'])==(position['topic'],position['partition'],position['offset']))
-            assert json.loads(actual['value'])==next(e for e in events if e['event_id']==json.loads(actual['value'])['event_id'])
-            position['value']=actual['value']
-        self.stack.trace('kafka_ack_and_observe','PASS',observed)
-        return track,events,positions,result

@@ -250,10 +250,16 @@ Dữ liệu mới được lưu riêng trong out/; chưa tích hợp vào Kafka/
 
 **Ví dụ minh họa:** “Trong 500 bình luận được phân tích, các từ/cụm từ hay nhắc là ‘điệp khúc’, ‘giọng hát’, ‘MV’. Khán giả chủ yếu bàn về đoạn điệp khúc dễ nhớ và hình ảnh trong MV.” Danh sách và con số này chưa được kiểm chứng; khi triển khai phải thay bằng kết quả có bằng chứng từ bình luận.
 
-**Khả thi:** crawler đã có văn bản bình luận để làm đầu vào. Cần lựa chọn nhà cung cấp/mô hình, cấu hình API key, giới hạn chi phí/số bình luận và xử lý lỗi API trước khi chạy. Lần cập nhật report này chưa gọi LLM API. LLM hỗ trợ hiểu cách diễn đạt và gom chủ đề; keyword có thể kiểm tra trực tiếp, còn nhãn chủ đề vẫn cần xem lại mẫu để đánh giá chất lượng. Kết luận áp dụng cho **mẫu bình luận đã crawl**, chưa đại diện toàn bộ khán giả.
+**Đã triển khai:** ứng dụng gọi OpenAI API để gom chủ đề và gợi ý cụm từ. Mã tự đếm số bình luận khớp từ khóa và kiểm tra các ID bằng chứng của chủ đề. Khóa API nằm trong `.env`, còn giới hạn mẫu và số bình luận phân tích mỗi ngày giúp kiểm soát lượng gửi đi. Kết quả mô tả **mẫu bình luận đã crawl**, chưa đại diện toàn bộ khán giả. Nên rà lại một số trích đoạn để đánh giá chất lượng nhãn chủ đề.
+
+### Sử dụng mục “Khán giả nói gì?”
+
+Chọn khoảng thời gian, nhóm bình luận và bài hát rồi bấm **Phân tích bình luận**. Khi chưa chọn ngày và khoảng hiện tại trống, danh sách hiển thị kỳ mới nhất có bình luận cùng ngày kết thúc thực tế. Bảng kết quả cho xem số bình luận, tỷ lệ trong mẫu và trích đoạn minh họa.
+
+Máy chủ đọc `OPENAI_API_KEY` từ môi trường hoặc file `.env` ở gốc dự án. `.env.example` chỉ chứa tên biến và giá trị cấu hình mẫu. Mặc định giao diện phân tích tối đa 50 bình luận mỗi lần. API cho phép tối đa 500, chia thành nhóm 20. Mỗi kho báo cáo có giới hạn 2.000 lượt bình luận gửi đi mỗi ngày UTC, có thể chỉnh bằng `COMMENT_DAILY_LIMIT`. Kết quả được lưu trong SQLite (`COMMENT_REPORT_DB`, mặc định `out/comment-reports.sqlite`). Khi chạy nhiều pod, mỗi pod dùng kho cục bộ trừ khi cấu hình lưu trữ chung. Trong chế độ Elasticsearch, luồng Spark đọc topic bình luận và tạo chỉ mục `music-comments`.
 
 ## 4. Phạm vi đề xuất tiếp theo
 
-Triển khai ý tưởng **1, 3 và 6** theo quyết định đã chốt. Ý tưởng **4** có bằng chứng dữ liệu cho bản country đầu tiên bằng Spotify qua Kworb, nhưng cần cập nhật schema/nhận diện bài và view country. Ý tưởng **7** triển khai theo hướng API LLM khi đã có cấu hình provider; ý tưởng **2** đã bỏ và **5** giữ để bàn bạc sau.
+Các ý tưởng **1, 3 và 7** đã có trong ứng dụng. Mục phân tích phản hồi nghe không còn trong dashboard. Ý tưởng **4** có bằng chứng dữ liệu cho bản country đầu tiên bằng Spotify qua Kworb, nhưng cần cập nhật schema/nhận diện bài và view country. Ý tưởng **2** đã bỏ và **5** giữ để bàn bạc sau.
 
 Mỗi insight nên kèm nguồn, ngày/kỳ dữ liệu, số quan sát và lý do tính toán. Các phép thống kê giúp mô tả dữ liệu đã thu thập; khi nói về tác động của playlist, gu quốc gia hoặc chủ đề khán giả, cần giữ phạm vi kết luận tương ứng với mẫu thực tế.

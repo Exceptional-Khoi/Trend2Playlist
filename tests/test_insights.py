@@ -42,17 +42,6 @@ def test_country_missing_is_null():
     assert any(x['countries']['VN'] is None for x in out['items'])
 
 
-def test_feedback_dedup_source_and_denominator():
-    def ev(i,action,source):
-        return dict(event_id=i,action=action,source=source,track_key='x',user_id='u')
-    rows=[ev('1','play','web'),ev('2','skip','web'),ev('3','like','web'),ev('4','play','simulator')]
-    out=m.summarize_listening_feedback(rows+rows)
-    assert out['items'][0]['skip_rate']==0.5
-    assert out['items'][0]['events']==3
-    assert out['source_counts']=={'web':3,'simulator':1}
-    assert m.summarize_listening_feedback([ev('1','like','web')])['items'][0]['skip_rate'] is None
-
-
 def test_playlist_excludes_mirrors_and_missing_future():
     p=dict(record_type='playlist_item',playlist_id='p',playlist_type='editorial',source='spotify',
            platform_id='x',position=1,crawled_at='2026-10-01T12:00:00+00:00')
@@ -73,24 +62,45 @@ def test_real_archive_country_evidence():
     if not (m.ROOT / 'out/country-feasibility-20261007T154533Z/records/spotify_kworb_vn.jsonl').exists():
         pytest.skip('Optional local crawl archive is not checked into Git')
     rows,_=m.load_local()
-    out=m.compare_country_tastes(rows,['VN','TH'],'2026-10-05',50)
-    assert out['overlap'][0]['common']==1
-    assert out['overlap'][0]['jaccard']==1/99
+    out = m.analyze(rows, 'countries', days=7, as_of='2026-10-07', countries=['VN','TH'])
+    assert [item['country'] for item in out['items']] == ['TH','VN']
+    assert all(item['title'] and item['url'] for item in out['items'])
 
 
 def test_numeric_value_is_not_kafka_envelope():
     assert m.normalize({'value': 4, 'source': 'trends'})['value']==4
 
 
-def test_api_filters_and_four_routes():
+def test_api_filters_and_removed_routes():
     from fastapi.testclient import TestClient
     from api import app
     client=TestClient(app)
-    for feature in ['lifecycle','playlists','countries','feedback']:
+    for feature in ['lifecycle','playlists','countries']:
         r=client.get('/api/insights/'+feature+'?days=90&as_of=2026-11-02')
         assert r.status_code==200
         assert 'items' in r.json()
     assert client.get('/api/insights/countries?as_of=bad').status_code==400
     assert client.get('/api/insights/countries?days=0').status_code==422
-    assert client.get('/api/insights/feedback?source=all').status_code==400
+    assert client.get('/api/insights/feedback').status_code==404
+    assert client.post('/api/listen',json={}).status_code==404
     assert 'insights.js' in client.get('/').text
+
+
+def test_playlist_memberships_across_days():
+    base = dict(record_type='playlist_item', source='spotify', platform_id='a', title='Song',
+                playlist_id='p', playlist_size=5, crawled_at='2026-10-01')
+    rows = [base, dict(base, crawled_at='2026-10-02'), dict(base, playlist_id='q'),
+            dict(base, playlist_id='small', playlist_size=4)]
+    assert m.playlist_ranking(rows)['items'][0]['playlist_count'] == 2
+
+
+def test_country_winner_averages_available_sources_and_days():
+    rows = []
+    for day, source, order in [('01', 'spotify', 'ab'), ('01', 'apple_music', 'ba'),
+                               ('02', 'spotify', 'ba')]:
+        for rank, title in enumerate(order, 1):
+            rows.append(dict(record_type='chart_entry', chart_id=source, source=source,
+                             country_code='VN', crawled_at='2026-10-'+day, title=title,
+                             platform_id=source+title, artists=['Artist'], rank=rank, chart_size=2))
+    winner, = m.analyze(rows, 'countries', 2, '2026-10-02')['items']
+    assert (winner['country'], winner['title'], winner['score']) == ('VN', 'b', .875)

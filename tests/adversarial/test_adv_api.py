@@ -18,19 +18,8 @@ def es_transport(env, handler):
     return client
 
 
-def producer_double(env, error=None):
-    sent=[]
-    class Producer:
-        def send(self,topic,**kwargs):
-            if error:raise error
-            sent.append(kwargs['value'])
-            return SimpleNamespace(get=lambda **_:SimpleNamespace(topic=topic,partition=0,offset=len(sent)-1))
-    env.monkeypatch.setattr(env.api,'producer',lambda:Producer())
-    return sent
-
-
-@case('G01','All four insight routes return typed empty results',technique='HTTP/partition',expected='HTTP 200, items list, archive metadata')
-@pytest.mark.parametrize('feature',['lifecycle','playlists','countries','feedback'])
+@case('G01','Chart insight routes return typed empty results',technique='HTTP/partition',expected='HTTP 200, items list, archive metadata')
+@pytest.mark.parametrize('feature',['lifecycle','playlists','countries'])
 def test_empty_routes(api_env,feature):
     archive(api_env,[])
     r=api_env.client.get('/api/insights/'+feature+'?as_of=2026-10-01')
@@ -42,10 +31,10 @@ def test_empty_routes(api_env,feature):
 @pytest.mark.parametrize('query,status',[
     ('days=0',422),('days=-1',422),('days=366',422),('days=1',200),('days=365',200),
     ('top_n=0',422),('top_n=201',422),('top_n=1',200),('top_n=200',200),
-    ('countries=VN',400),('countries=VN,VN',400),('countries=VN,TH',200),
-    ('countries=V1,TH',400),('countries=VN,TH,ID,US,JP,FR,DE,GB,AU,CA,NZ',400),
+    ('countries=VN',200),('countries=VN,VN',200),('countries=VN,TH',200),
+    ('countries=V1,TH',400),('countries=VN,TH,ID,US,JP,FR,DE,GB,AU,CA,NZ',200),
     ('as_of=bad',400),('as_of=2026-02-30',400),('as_of=2026-W01-1',400),
-    ('as_of=20261001',400),('source=all',400),('group_by=evil',400)])
+    ('as_of=20261001',400)])
 def test_query_validation(api_env,query,status):
     archive(api_env,[])
     assert api_env.client.get('/api/insights/countries?'+query).status_code==status
@@ -62,7 +51,7 @@ def test_country_iso_values(api_env,countries):
 @pytest.mark.parametrize('row',[{'ts_ms':float('inf'),'action':'play'}, {'crawled_at':'no-date','record_type':'chart_entry'}, {'ts_ms':-1e40,'action':'play'}])
 def test_malformed_archive(api_env,row):
     archive(api_env,[row])
-    assert api_env.client.get('/api/insights/feedback').status_code==422
+    assert api_env.client.get('/api/insights/lifecycle').status_code==422
 
 
 @case('G05','Malformed JSONL input is reported without crashing the loader',technique='HTTP/filesystem',expected='Valid lines preserved; invalid lines counted; HTTP 200 or controlled 422')
@@ -70,7 +59,7 @@ def test_malformed_archive(api_env,row):
 def test_bad_jsonl_top_level(api_env,line):
     folder=api_env.root/'out';folder.mkdir()
     (folder/'music.events.jsonl').write_text(json.dumps(event())+'\n'+line+'\n',encoding='utf-8')
-    result=api_env.client.get('/api/insights/feedback?as_of=2026-10-01')
+    result=api_env.client.get('/api/insights/lifecycle?as_of=2026-10-01')
     assert result.status_code in (200,422), result.text[:200]
 
 
@@ -84,7 +73,7 @@ def test_es_fail_closed(api_env,fault):
         if fault=='reset':raise api_env.httpx.ConnectError('injected')
         return api_env.httpx.Response(fault,json={'error':'injected'})
     es_transport(api_env,handler)
-    assert api_env.client.get('/api/insights/feedback').status_code==503
+    assert api_env.client.get('/api/insights/lifecycle').status_code==503
 
 
 @case('G07','Malformed ES envelope/value yields a controlled data error and releases scroll',technique='HTTP/fault-injection',priority='P0',expected='422 or 503, scroll delete attempted')
@@ -96,7 +85,7 @@ def test_malformed_es_value(api_env,value):
         if req.method=='DELETE':deleted.append(req);return api_env.httpx.Response(200,json={})
         return api_env.httpx.Response(200,json={'_scroll_id':'s','hits':{'hits':[{'_source':{'value':value}}]}})
     es_transport(api_env,handler)
-    r=api_env.client.get('/api/insights/feedback')
+    r=api_env.client.get('/api/insights/lifecycle')
     assert r.status_code in (422,503),r.text[:200]
     assert deleted
 
@@ -115,7 +104,7 @@ def test_record_limit(api_env,count,status):
     es_transport(api_env,handler)
     # Isolate pagination/limit from the separately tested analytics; HTTP still decodes every record.
     api_env.monkeypatch.setattr(api_env.model,'analyze',lambda records,*a,**k:{'items':[],'read':len(records)})
-    result=api_env.client.get('/api/insights/feedback')
+    result=api_env.client.get('/api/insights/lifecycle')
     assert result.status_code==status
     assert deleted
     if status==200:assert result.json()['read']==count
@@ -134,67 +123,6 @@ def test_unknown_backend(api_env):
     api_env.monkeypatch.setenv('INSIGHT_BACKEND','elastcisearch')
     archive(api_env,[])
     assert api_env.client.get('/api/insights/lifecycle').status_code==503
-
-
-@case('D06','User ID constraints are consistent across archive and Kafka modes',technique='HTTP/boundary',priority='P0',expected='Reject blank or >100 chars without sending Kafka')
-@pytest.mark.parametrize('mode',['archive','elasticsearch'])
-@pytest.mark.parametrize('user',['','   ','x'*101])
-def test_listen_user_validation(api_env,mode,user):
-    archive(api_env,[chart()]);api_env.monkeypatch.setenv('INSIGHT_BACKEND',mode)
-    sent=producer_double(api_env)
-    r=api_env.client.post('/api/listen',json={'user_id':user,'province_code':'ha-noi','track_key':'x','action':'play'})
-    assert r.status_code in (400,422) and not sent
-
-
-@case('D07','Unknown tracks are rejected when lookup succeeds with not-found',technique='HTTP/partition',priority='P0',expected='400 or 404 and no Kafka send')
-@pytest.mark.parametrize('mode',['archive','elasticsearch'])
-def test_unknown_track(api_env,mode):
-    archive(api_env,[]);api_env.monkeypatch.setenv('INSIGHT_BACKEND',mode)
-    async def missing(*args):return None
-    api_env.monkeypatch.setattr(api_env.api,'get_doc',missing)
-    sent=producer_double(api_env)
-    r=api_env.client.post('/api/listen',json={'user_id':'user','province_code':'ha-noi','track_key':'not-a-track'})
-    assert r.status_code in (400,404) and not sent
-
-
-@case('D08','Clicking play/skip never fabricates measured playback duration',technique='HTTP/decision-table',priority='P0',expected='listen_ms missing or null for unmeasured web action',risk='Fabricated evidence of listening')
-@pytest.mark.parametrize('mode',['archive','elasticsearch'])
-@pytest.mark.parametrize('action',['play','skip','like'])
-def test_click_is_not_playback_measurement(api_env,mode,action):
-    archive(api_env,[chart()]);api_env.monkeypatch.setenv('INSIGHT_BACKEND',mode)
-    producer_double(api_env)
-    r=api_env.client.post('/api/listen',json={'user_id':'tester','province_code':'ha-noi','track_key':'x','action':action})
-    assert r.status_code==200
-    assert r.json()['event'].get('listen_ms') in (None,0)
-
-
-@case('D09','Invalid province/action is rejected; Unicode IDs are accepted',technique='HTTP/partition',expected='400 invalid enum, 200 valid Unicode')
-@pytest.mark.parametrize('field,value,status',[('province_code','bad',400),('action','delete',400),('user_id','người-thử-🎵',200)])
-def test_listen_enums_unicode(api_env,field,value,status):
-    archive(api_env,[chart()])
-    body={'user_id':'u','province_code':'ha-noi','track_key':'x','action':'like'};body[field]=value
-    assert api_env.client.post('/api/listen',json=body).status_code==status
-
-
-@case('D10','Kafka unavailable returns 503 without writing archive',technique='HTTP/fault-injection',priority='P0',expected='503, no local event file')
-def test_listen_kafka_failure(api_env):
-    api_env.monkeypatch.setenv('INSIGHT_BACKEND','elasticsearch')
-    producer_double(api_env,error=TimeoutError('injected timeout'))
-    r=api_env.client.post('/api/listen',json={'user_id':'u','province_code':'ha-noi','track_key':'x'})
-    assert r.status_code==503
-    assert not (api_env.root/'out/insight-web-events.jsonl').exists()
-
-
-@case('D11','Concurrent archive requests preserve complete unique JSON lines',technique='HTTP/concurrency',expected='32 successes, 32 valid unique event IDs, no lost append')
-def test_concurrent_archive_append(api_env):
-    archive(api_env,[chart()])
-    def post(i):return api_env.client.post('/api/listen',json={'user_id':f'u{i}','province_code':'ha-noi','track_key':'x','action':'like'}).status_code
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:results=list(pool.map(post,range(32)))
-    assert results==[200]*32
-    p=api_env.root/'out/insight-web-events.jsonl'
-    records=[json.loads(line) for line in p.read_text(encoding='utf-8').splitlines()]
-    assert len(records)==len({r['event_id'] for r in records})==32
-    p.rename(p.with_suffix('.closed'))  # Windows catches an open-file leak here.
 
 
 @case('G11','Compatibility endpoints remain discoverable and return stable empty structures',technique='HTTP/route-inventory',expected='HTTP 200 under empty ES; genuine removed routes 404')

@@ -13,7 +13,7 @@ cm() {
 }
 cm crawler-code --from-file=crawler/ "${SHARED[@]}"
 cm spark-code --from-file=spark/ "${SHARED[@]}"
-cm serving-code --from-file=serving/api.py --from-file=serving/insights.py --from-file=serving/es_setup.py --from-file=serving/requirements.txt "${SHARED[@]}"
+cm serving-code --from-file=serving/api.py --from-file=serving/insights.py --from-file=serving/comment_topics.py --from-file=serving/es_setup.py --from-file=serving/requirements.txt "${SHARED[@]}"
 cm dashboard-static --from-file=serving/static/
 
 if [ "${1:-}" != "--no-restart" ]; then
