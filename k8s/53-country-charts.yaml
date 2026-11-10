@@ -24,6 +24,8 @@ spec:
               env:
                 # Keep charts from available markets when one provider skips a country.
                 - { name: FAIL_ON_PARTIAL, value: "false" }
+                - { name: COUNTRY_CHART_LIMIT, value: "20" }
+                - { name: COUNTRY_FAILURE_LIMIT, value: "3" }
               resources:
                 requests: { cpu: 100m, memory: 128Mi }
                 limits: { memory: 384Mi }

@@ -1,11 +1,13 @@
 """Apple Music - BXH 'Most Played' Việt Nam qua Apple Marketing Tools RSS (JSON công khai)."""
 import logging
 import os
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 
 from common import TOPIC_CHARTS, chart_entry, track_fields
 
 log = logging.getLogger("apple")
-FEED = "https://rss.applemarketingtools.com/api/v2/{country}/music/most-played/{limit}/songs.json"
+FEED = "https://rss.marketingtools.apple.com/api/v2/{country}/music/most-played/{limit}/songs.json"
 
 
 def crawl_charts(session, crawled_ms):
@@ -13,7 +15,8 @@ def crawl_charts(session, crawled_ms):
 
 
 def market_chart(session, crawled_ms, country):
-    r = session.get(FEED.format(country=country, limit=100), timeout=25)
+    limit = max(1, min(100, int(os.getenv('COUNTRY_CHART_LIMIT', '20'))))
+    r = session.get(FEED.format(country=country, limit=limit), timeout=(5, 10))
     r.raise_for_status()
     feed = r.json()["feed"]
     if feed.get("country") and feed["country"].lower() != country.lower():
@@ -26,7 +29,18 @@ def market_chart(session, crawled_ms, country):
             url=x.get("url"), thumbnail=(x.get("artworkUrl100") or "").replace("100x100", "300x300") or None,
             genres=genres, release_date=x.get("releaseDate"),
         )
-        yield TOPIC_CHARTS, tr["track_key"], chart_entry(f"apple_most_played_{country}", crawled_ms, rank, len(results), tr, scope=country.upper())
+        record = chart_entry(f"apple_most_played_{country}", crawled_ms, rank, len(results), tr, scope=country.upper())
+        updated = feed.get('updated')
+        period = None
+        if updated:
+            try:
+                period = datetime.fromisoformat(updated.replace('Z', '+00:00')).date().isoformat()
+            except ValueError:
+                period = parsedate_to_datetime(updated).date().isoformat()
+        record.update(data_provider='apple_music_rss', country_code=country.upper(), period_type='realtime',
+                      source_period=period,
+                      source_url=FEED.format(country=country, limit=limit))
+        yield TOPIC_CHARTS, tr["track_key"], record
     log.info("apple most-played %s: %d", country, len(results))
 
 

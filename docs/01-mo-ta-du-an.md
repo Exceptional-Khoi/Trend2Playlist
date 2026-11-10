@@ -1,5 +1,7 @@
 # Mô tả dự án (Project description)
 
+> **Đề cương gốc của bài tập, không phải danh sách màn hình hiện tại.** Phạm vi sản phẩm đã cập nhật tại [PROJECT_PLAN](../PROJECT_PLAN.md) và [README](../README.md). Giữ tài liệu này làm căn cứ học thuật; không dùng các màn hình/luồng đề xuất bên dưới làm hướng dẫn deploy.
+
 ## Tên đề tài
 
 **Phân tích xu hướng âm nhạc theo tỉnh/thành Việt Nam và gợi ý playlist thời gian thực từ dữ liệu các nền tảng nghe nhạc**

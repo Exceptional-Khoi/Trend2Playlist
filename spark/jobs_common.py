@@ -176,7 +176,9 @@ def read_raw(spark, topic_name):
     schema = SCHEMAS[topic_name]
     try:
         raw = spark.read.parquet(LAKE + "/raw").where(F.col("topic") == TOPICS[topic_name])
-    except AnalysisException:
+    except AnalysisException as exc:
+        if getattr(exc, 'getErrorClass', lambda: None)() != 'PATH_NOT_FOUND':
+            raise
         empty = T.StructType(schema.fields + [T.StructField("kafka_ts", T.TimestampType()), T.StructField("dt", _S)])
         return spark.createDataFrame([], empty)
     return (raw.select(F.from_json("value", schema).alias("v"), "kafka_ts", "dt")

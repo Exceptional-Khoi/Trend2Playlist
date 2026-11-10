@@ -1,5 +1,7 @@
 # Báo cáo dữ liệu đã crawl và vai trò trong dự án
 
+> **Bằng chứng dữ liệu mẫu ngày 06/10/2026, không phải số liệu cloud hiện tại.** Giữ để truy xuất báo cáo môn học. Khi demo hoặc bàn giao, lấy coverage thực tế từ dashboard và pipeline đang chạy, không dùng số đếm ở đây làm cam kết.
+
 **Ngày chụp dữ liệu:** 06/10/2026  
 **Tổng số bản ghi kiểm chứng:** 10.305  
 **Phạm vi:** Zing MP3, Spotify, Apple Music, YouTube và Google Trends.

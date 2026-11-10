@@ -2,7 +2,7 @@
 
 ## Đối tượng và hai pha
 
-Baseline của chiến dịch phát hiện lỗi là **main sạch, commit `4ab6c756adb36ba96ec7c67883ce448bff928817`**. Checkout hiện tại chứa các bản sửa được thực hiện sau chiến dịch, theo yêu cầu riêng của người dùng; không còn là baseline sạch. Báo cáo/bằng chứng trước sửa được giữ riêng trong bộ bàn giao QA, không bị ghi đè bằng kết quả sau sửa. Quy tắc nghiệp vụ đã chốt được mô tả tại `docs/11-adversarial-hardening.md`.
+Baseline lịch sử của chiến dịch phát hiện lỗi là **main sạch, commit `4ab6c756adb36ba96ec7c67883ce448bff928817`**. Checkout hiện tại đã có các thay đổi sản phẩm sau chiến dịch; không còn là baseline sạch. Báo cáo/bằng chứng trước sửa được giữ riêng, không ghi đè bằng kết quả mới. Hợp đồng UI/API hiện hành nằm trong [bốn tính năng](../docs/09-four-features-implementation.md). Các phần inventory/oracle lịch sử bên dưới giải thích test model/legacy, không phải danh sách endpoint hay màn hình đang chạy.
 
 PHA 1: đọc tài liệu/code, viết test và matrix. PHA 2 chỉ bắt đầu sau khi lưu `test_reports/PHASE1_COMPLETE.json`. Khi PHA 2 tìm thấy test sai, lưu lý do điều chỉnh và bằng chứng; không đổi oracle để che bug. Có thể bổ sung regression nhỏ để xác minh phát hiện ở PHA 2, phải ghi rõ đó là bước đào sâu.
 
@@ -15,7 +15,7 @@ Mã test nằm trong `tests/adversarial/`. Mặc định source là root reposit
 | Nhóm | Vai trò và trạng thái thực tế | Input → output | Dependency / điểm rủi ro |
 |---|---|---|---|
 | `serving/insights.py` | Logic hiện hành cho 4 chức năng | raw dict có record_type, platform_id, source_period, timestamp → kết quả JSON | Tính đầy đủ snapshot, phân biệt kỳ nguồn/crawl, dedup, validation số, namespace ID |
-| `serving/api.py` | FastAPI; archive hoặc ES; `/api/listen` nhận thao tác | HTTP → JSON, file archive hoặc Kafka | Validation khác theo mode, ES scroll/cleanup, JSON lỗi, dependency timeout, memory cap |
+| `serving/api.py` | FastAPI archive/ES; ba insight và API bình luận | HTTP → JSON | Validation, ES scroll/cleanup, dependency timeout, memory cap; `/api/listen` hiện phải 404 |
 | `serving/static/insights.*` | Dashboard duy nhất trên main | API JSON → DOM và form thao tác | XSS, trạng thái lỗi, kết quả rỗng, stale request; dùng textContent |
 | API compatibility | `/api/provinces`, trending, recommend và nhiều JSON route cũ vẫn tồn tại | ES batch/realtime → JSON | Không suy ra tất cả API cũ đã xóa chỉ vì dashboard cũ bị gỡ; `/legacy` và static cũ phải 404 |
 | `crawler/common.py` | Session retry, record builders và sinks hiện hành | HTTP/record → Kafka, stdout hoặc JSONL | Timeout, dữ liệu thiếu, async delivery failure, serialization, tên file topic |
@@ -33,7 +33,7 @@ Mã test nằm trong `tests/adversarial/`. Mặc định source là root reposit
 | `k8s/`, scripts | Standard Kubernetes deployment, code qua ConfigMap | YAML/Bash → cluster | Namespace/reference, probes, resources, injected env ports, LF, dependency order |
 | CI | pytest, compileall, bash -n | Push/PR → checks | Tài liệu đã thừa nhận YAML parse không phải API schema; campaign bổ sung offline schema validation |
 
-Tài liệu 07 là đặc tả/ý tưởng ở một mốc thời gian; 09/10 mô tả 4 chức năng và giới hạn triển khai sau đó. PROJECT_PLAN và phần lớn README bên dưới đoạn đầu vẫn nói về bản đồ/gợi ý cũ. Không coi ý tưởng 2/5/7 là chức năng hiện đã triển khai. Số test/tích hợp mà tài liệu cũ kể lại không được đưa vào kết quả chạy mới.
+Tài liệu 07 giữ thiết kế ý tưởng ban đầu và được gắn nhãn tham khảo. README/PROJECT_PLAN/tài liệu 09 hiện mô tả bốn tính năng Music Pulse, trong đó có phân tích bình luận bằng LLM. Số test/tích hợp mà báo cáo lịch sử kể lại không được đưa vào kết quả chạy mới; lấy collection/JUnit mới làm bằng chứng.
 
 ## Oracle và bất biến
 

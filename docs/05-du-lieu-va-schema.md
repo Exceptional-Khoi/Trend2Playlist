@@ -1,5 +1,7 @@
 # Dữ liệu và schema của VN Music Pulse
 
+> **Tài liệu giải thích dữ liệu và công cụ offline ban đầu.** Ví dụ/số lượng và các bảng theo tỉnh ở đây không phải response của dashboard hiện tại. Hợp đồng UI/API xem [bốn tính năng đang phục vụ](09-four-features-implementation.md); schema thực thi kiểm tra trong `spark/jobs_common.py` và producer hiện hành.
+
 Tài liệu này mô tả hình dạng dữ liệu từ lúc crawler tạo bản ghi cho đến khi Spark biến nó thành các bảng phục vụ dashboard.
 
 ## 1. Trước tiên: dữ liệu có phải là “bảng” không?

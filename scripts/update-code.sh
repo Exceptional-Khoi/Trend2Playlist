@@ -15,6 +15,10 @@ cm crawler-code --from-file=crawler/ "${SHARED[@]}"
 cm spark-code --from-file=spark/ "${SHARED[@]}"
 cm serving-code --from-file=serving/api.py --from-file=serving/insights.py --from-file=serving/comment_topics.py --from-file=serving/es_setup.py --from-file=serving/requirements.txt "${SHARED[@]}"
 cm dashboard-static --from-file=serving/static/
+# Earlier manual ConfigMap patches may own these keys, so apply alone can retain
+# them even after the obsolete files are deleted from the source tree.
+kubectl -n "$NS" patch configmap dashboard-static --type=merge \
+  -p '{"data":{"index.html":null,"app.js":null,"style.css":null}}'
 
 if [ "${1:-}" != "--no-restart" ]; then
   for r in deployment/speed-layer deployment/music-api statefulset/listener-sim; do

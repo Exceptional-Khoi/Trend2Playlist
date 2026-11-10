@@ -135,6 +135,11 @@ def crawl_playlists(session, crawled_ms):
         songs = (data.get("song") or {}).get("items", [])
         for pos, it in enumerate(songs, start=1):
             t = _track(it, genres)
-            yield TOPIC_PLAYLISTS, t["track_key"], playlist_item(f"zing:{pid}", name, hint, crawled_ms, pos, t)
+            record = playlist_item(f"zing:{pid}", name, hint, crawled_ms, pos, t)
+            link = data.get('link')
+            record['playlist_url'] = (BASE + link if link.startswith('/') else link) if isinstance(link, str) else None
+            record['playlist_size'] = len(songs)
+            record['playlist_type'] = 'genre_collection'
+            yield TOPIC_PLAYLISTS, t["track_key"], record
         time.sleep(0.3)
     log.info("zing playlists: %d", len(seen[:TOP100_LIMIT]))

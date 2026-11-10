@@ -20,6 +20,8 @@ python scripts/run-cloud-tests.py gke-performance --scope scope.json
 python scripts/run-cloud-tests.py gke-all --scope scope.json --allow-destructive
 ```
 
+`gke-performance` hiện báo BLOCKED trước khi tạo tài nguyên: CP-001/CP-002 mới là thiết kế, chưa có executable load/soak test. Không lấy kết quả integration smoke làm chứng nhận performance. `--collect-only` vẫn dùng được để xem các case hiện hữu.
+
 Mỗi command tạo và cleanup stack riêng; scope run ID phải đổi khi chạy lại. Runner ghi raw checkpoints JSONL, source hashes, Kubernetes identity/logs, manifests, resource journal, pytest JUnit và results. `finally` thực hiện cleanup; nếu process bị kill, dùng journal và UID để kiểm ownership trước thao tác phục hồi. Không dùng deploy.sh hoặc script fault cũ vì hardcode namespace `music`.
 
 Mặc định `pytest tests` không chạy cloud. Local baseline không coi integration thiếu service là pass. Không ước tính chi phí từ bảng giá cũ: không thêm billed resource; incremental compute trên node đã cấp thường không thêm node-hour nhưng network egress/dependency download và logging có thể phát sinh, chưa có billing attribution thì NOT MEASURED.

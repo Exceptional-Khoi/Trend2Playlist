@@ -317,6 +317,9 @@ class Harness:
 
     def await_records(self,acks,timeout=150):
         started=time.monotonic();needed={(r['topic'],r['partition'],r['offset']) for r in acks}
+        # These three topics feed the raw insight index; events/comments/trends
+        # still require HDFS reconciliation and their own typed-sink assertions.
+        insight_acks=[a for a in acks if a['topic'] in ('music.charts','music.playlists','music.country-charts')]
         def observe_hdfs():
             remaining=started+timeout-time.monotonic()
             if remaining<=0:return None
@@ -329,18 +332,20 @@ class Harness:
         actual={(r['topic'],r['partition'],r['offset']):r for r in hdfs['rows']}
         for a in acks:assert actual[(a['topic'],a['partition'],a['offset'])]['value']==a['value']
         self.trace('hdfs','PASS',{'rows':[actual[k] for k in sorted(needed)],'wait_seconds':time.monotonic()-started})
-        def fetch():return self.http('/music-insight-raw/_mget',method='POST',body={'ids':[a['doc_id'] for a in acks]},service='elasticsearch')
-        es=poll(fetch,lambda r:r['status']==200 and all(d.get('found') for d in r['body'].get('docs',[])),timeout=timeout,interval=3,guard=self.guard)
-        assert len(es['body']['docs'])==len(acks)
-        for a,d in zip(acks,es['body']['docs']):assert d['_source']['value']==a['value']
-        self.trace('elasticsearch','PASS',{'docs':es['body']['docs'],'wait_seconds':time.monotonic()-started})
+        es=None
+        if insight_acks:
+            def fetch():return self.http('/music-insight-raw/_mget',method='POST',body={'ids':[a['doc_id'] for a in insight_acks]},service='elasticsearch')
+            es=poll(fetch,lambda r:r['status']==200 and all(d.get('found') for d in r['body'].get('docs',[])),timeout=timeout,interval=3,guard=self.guard)
+            assert len(es['body']['docs'])==len(insight_acks)
+            for a,d in zip(insight_acks,es['body']['docs']):assert d['_source']['value']==a['value']
+            self.trace('elasticsearch','PASS',{'docs':es['body']['docs'],'wait_seconds':time.monotonic()-started})
         def covered(checkpoints):
-            for name in ['ingest','insight-raw']:
+            for name,expected in [('ingest',acks)]+([('insight-raw',insight_acks)] if insight_acks else []):
                 if name not in checkpoints:return False
                 source_offsets={}
                 for record in checkpoints[name]['offset_log']:
                     if isinstance(record,dict):source_offsets.update({k:v for k,v in record.items() if k.startswith('music.')})
-                if any(source_offsets.get(a['topic'],{}).get(str(a['partition']),-1)<=a['offset'] for a in acks):return False
+                if any(source_offsets.get(a['topic'],{}).get(str(a['partition']),-1)<=a['offset'] for a in expected):return False
             return True
         checkpoints=poll(lambda:self.rpc('checkpoints'),covered,timeout=timeout,interval=3,guard=self.guard)
         self.trace('spark_checkpoints','PASS',checkpoints)

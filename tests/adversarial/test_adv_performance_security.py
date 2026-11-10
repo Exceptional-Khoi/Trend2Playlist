@@ -77,7 +77,8 @@ def test_dashboard_xss(source_root):
             elif path=='/':r.fulfill(status=200,content_type='text/html',body=(source_root/'serving/static/insights.html').read_text(encoding='utf-8'))
             else:r.abort()
         page.route('**/*',route)
-        page.goto('http://qa.invalid/',wait_until='domcontentloaded')
+        # Home now renders cards; exercise the lifecycle table's untrusted title.
+        page.goto('http://qa.invalid/#lifecycle',wait_until='domcontentloaded')
         page.wait_for_function("document.querySelectorAll('tbody tr').length===1")
         assert page.evaluate('window.__qa_xss') is None
         assert page.locator('tbody').inner_text().find(attack)>=0

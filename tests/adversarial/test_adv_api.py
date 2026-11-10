@@ -139,7 +139,7 @@ def test_endpoint_inventory(api_env,path):
 
 
 @case('G12','Removed dashboard and path traversal routes cannot expose files',technique='HTTP/security',expected='404, no application file bytes')
-@pytest.mark.parametrize('path',['/legacy','/static/app.js','/static/index.html','/static/%2e%2e/api.py','/static/%2e%2e/%2e%2e/.env','/static/%252e%252e/api.py'])
+@pytest.mark.parametrize('path',['/legacy','/static/app.js','/static/index.html','/static/style.css','/static/%2e%2e/api.py','/static/%2e%2e/%2e%2e/.env','/static/%252e%252e/api.py'])
 def test_removed_and_traversal(api_env,path):
     assert api_env.client.get(path).status_code==404
 

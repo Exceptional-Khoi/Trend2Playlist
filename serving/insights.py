@@ -5,8 +5,10 @@ from itertools import combinations
 from math import log2, isfinite
 from statistics import median
 import json
+import hashlib
 import os
 import re
+import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,7 +65,7 @@ def load_local():
     paths += [ROOT / 'out' / f'music.{topic}.jsonl'
               for topic in ('charts', 'playlists', 'country-charts')]
     paths += [run / f'music.{topic}.jsonl'
-              for run in (ROOT / 'out-test').iterdir() if run.is_dir()
+              for run in (ROOT / 'out-test').glob('*') if run.is_dir()
               for topic in ('charts', 'playlists', 'country-charts')]
     extra = os.getenv('INSIGHT_DATA_DIR')
     if extra:
@@ -105,7 +107,8 @@ def chart_snapshots(records):
             if type(rank) is not int or rank < 1 or (size is not None and (type(size) is not int or size < rank)):
                 invalid_snapshots.add(snapshot)
                 continue
-            fingerprint = canonical(r)
+            # Retain a fixed-size dedup key rather than a second full JSON copy.
+            fingerprint = hashlib.sha256(canonical(r).encode('utf8')).digest()
             if fingerprint in seen:
                 continue
             seen.add(fingerprint)
@@ -128,10 +131,13 @@ def chart_snapshots(records):
         key = (group, period) if period else (group, 'unknown', str(snap))
         time = max((timestamp(r) for r in rows if timestamp(r)), default=datetime.min.replace(tzinfo=timezone.utc))
         rows.sort(key=canonical)
-        candidate = (time, canonical(rows))
-        if key not in periods or candidate > periods[key][0]:
-            periods[key] = (candidate, rows)
-    return [rows for _, rows in sorted(periods.values(), key=lambda p: p[0])]
+        previous = periods.get(key)
+        if (previous is None or time > previous[0]
+                or (time == previous[0] and canonical(rows) > canonical(previous[1]))):
+            periods[key] = (time, rows)
+    # Preserve the original deterministic tie order without retaining all JSON
+    # candidate strings alongside every snapshot throughout the grouping pass.
+    return [rows for _, rows in sorted(periods.values(), key=lambda p: (p[0], canonical(p[1])))]
 
 
 def complete(rows):
@@ -178,7 +184,7 @@ def analyze_track_lifecycle(records, track_key=None):
                         status, reason = 'left_chart', 'Không xuất hiện ở kỳ tiếp theo đã crawl đủ hạng; chỉ kết luận rời BXH này.'
             times = sorted(timestamp(r) for r in observations if timestamp(r))
             output.append({'track_id': track, 'title': observations[0].get('title'), 'source': group[4] or group[0], 'data_provider': group[0],
-                           'url': observations[-1].get('url'), 'artists': observations[-1].get('artists'), 'chart_id': group[1], 'country': group[2], 'best_rank': min(r['rank'] for r in observations),
+                           'url': observations[-1].get('url'), 'thumbnail': observations[-1].get('thumbnail'), 'artists': observations[-1].get('artists'), 'chart_id': group[1], 'country': group[2], 'best_rank': min(r['rank'] for r in observations),
                            'periods': len(known), 'observations': len(observations), 'status': status, 'reason': reason,
                            'first_observed': times[0].isoformat() if times else None,
                            'tracking_days': (times[-1] - times[0]).days if times else 0,
@@ -295,34 +301,60 @@ def song_key(row):
     artists = row.get('artists') or []
     artist = artists[0] if isinstance(artists, list) and artists else artists
     if isinstance(row.get('title'), str) and artist:
-        return (row['title'].strip().casefold(), str(artist).strip().casefold())
+        return (unicodedata.normalize('NFC', row['title']).strip().casefold(),
+                unicodedata.normalize('NFC', str(artist)).strip().casefold())
     return (row.get('source') or '', identity(row))
 
 
 def song_info(row):
-    return {k: row.get(k) for k in ('title', 'artists', 'url')}
+    return {k: row.get(k) for k in ('title', 'artists', 'url', 'thumbnail', 'source', 'track_key')}
+
+
+def playlist_link(row):
+    from urllib.parse import urlsplit, quote
+    supplied = row.get('playlist_url') or row.get('playlist_link')
+    if isinstance(supplied, str) and urlsplit(supplied).scheme in ('http', 'https'):
+        return supplied
+    pid = str(row.get('playlist_id') or '')
+    if row.get('source') == 'spotify' and pid:
+        return 'https://open.spotify.com/playlist/' + quote(pid.removeprefix('spotify:'), safe='')
+    # A Zing slug cannot be recovered reliably from an ID. Keep it unlinked until crawled.
+    return None
 
 
 def playlist_ranking(records):
     captures = defaultdict(list)
+    playlist_metadata = {}
     for row in records:
-        if row.get('record_type') != 'playlist_item' or row.get('playlist_type') == 'chart_mirror':
+        if row.get('record_type') != 'playlist_item':
             continue
         if row.get('playlist_id') and identity(row):
             captures[(row.get('source'), row['playlist_id'], timestamp(row))].append(row)
-    memberships = defaultdict(set)
+            if playlist_link(row):
+                old = playlist_metadata.get((row.get('source'), row['playlist_id']))
+                if old is None or (timestamp(row) and timestamp(row) >= timestamp(old)):
+                    playlist_metadata[row.get('source'), row['playlist_id']] = row
+    memberships = defaultdict(dict)
     songs = {}
     for (source, playlist, _), rows in captures.items():
         observed = len({identity(r) for r in rows})
         reported = max((r['playlist_size'] for r in rows if type(r.get('playlist_size')) is int), default=0)
-        if max(observed, reported) < 5:
-            continue
         for row in rows:
             key = song_key(row)
-            memberships[key].add((source, playlist))
+            pos = row.get('position')
+            entry = {'id': playlist, 'name': row.get('playlist_name') or playlist, 'source': source,
+                     'url': playlist_link(row) or playlist_link(playlist_metadata.get((source, playlist), {})), 'type': row.get('playlist_type') or 'unknown',
+                     'position': pos if type(pos) is int and pos > 0 else None,
+                     'size': reported or observed, 'last_seen': timestamp(row).isoformat() if timestamp(row) else None}
+            previous = memberships[key].get((source, playlist))
+            if previous is None or (entry['last_seen'] or '') >= (previous['last_seen'] or ''):
+                memberships[key][source, playlist] = entry
             songs[key] = song_info(row)
-    return {'items': [dict(songs[k], playlist_count=len(memberships[k])) for k in
-                      sorted(songs, key=lambda k: (-len(memberships[k]), k))]}
+    items = [dict(songs[k], playlist_count=len(memberships[k]),
+                  playlists=sorted(memberships[k].values(), key=lambda p: (p['source'] or '', p['name'])))
+             for k in sorted(songs, key=lambda k: (-len(memberships[k]), k))]
+    return {'items': items, 'unique_playlists': len({pair for values in memberships.values() for pair in values}),
+            'note': 'Đếm playlist khác nhau đã quan sát trong khoảng chọn; gồm playlist nhỏ, chưa phân loại và bản sao BXH. Mỗi playlist ghi rõ nguồn, loại và lần thấy gần nhất; không khẳng định đây là lịch sử đầy đủ.'}
 
 
 def country_winners(records, countries, days, end):
@@ -342,9 +374,18 @@ def country_winners(records, countries, days, end):
         charts[key] = rows
     scores = defaultdict(dict)
     songs = {}
+    country_sources = defaultdict(set)
+    latest = {}
+    details = defaultdict(dict)
     for (country, day, source, _), rows in charts.items():
         size = max(r.get('chart_size') or r['rank'] for r in rows)
         votes = scores[country, day, source]
+        country_sources[country].add(source)
+        latest[country] = max(latest.get(country, ''), day)
+        top = min(rows, key=lambda r: r['rank'])
+        if source not in details[country] or day >= details[country][source]['date']:
+            details[country][source] = dict(song_info(top), date=day, rank=top['rank'],
+                                           chart_id=top.get('chart_id'), chart_url=top.get('source_url'))
         for r in rows:
             metric = r.get('metric_value')
             if isinstance(metric, float) and not isfinite(metric):
@@ -367,8 +408,13 @@ def country_winners(records, countries, days, end):
             continue
         scores = totals[country]
         winner = min(scores, key=lambda k: (-scores[k], k))
-        items.append(dict(songs[country, winner], country=country, score=scores[winner]/counts[country]))
-    return {'items': items, 'available_countries': sorted(totals)}
+        items.append(dict(songs[country, winner], country=country, score=scores[winner]/counts[country],
+                          sources=sorted(country_sources[country]), source_count=len(country_sources[country]),
+                          observed_days=counts[country], chart_date=latest[country],
+                          charts=list(details[country].values())))
+    return {'items': items, 'available_countries': sorted(totals),
+            'sources': sorted({s for values in country_sources.values() for s in values}),
+            'note': 'Bài nổi bật dựa trên điểm thứ hạng trung bình của các BXH/nguồn có dữ liệu trong kỳ. Không phải thị phần lượt nghe toàn cầu; nước không có dữ liệu không được gán số 0.'}
 
 
 def analyze(records, feature, days=30, as_of=None, **params):

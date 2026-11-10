@@ -91,7 +91,8 @@ def test_playlist_memberships_across_days():
                 playlist_id='p', playlist_size=5, crawled_at='2026-10-01')
     rows = [base, dict(base, crawled_at='2026-10-02'), dict(base, playlist_id='q'),
             dict(base, playlist_id='small', playlist_size=4)]
-    assert m.playlist_ranking(rows)['items'][0]['playlist_count'] == 2
+    # The new product requirement includes small playlists as well as large ones.
+    assert m.playlist_ranking(rows)['items'][0]['playlist_count'] == 3
 
 
 def test_country_winner_averages_available_sources_and_days():

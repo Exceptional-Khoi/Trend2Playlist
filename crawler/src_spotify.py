@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+from datetime import date
 
 from common import TOPIC_CHARTS, TOPIC_PLAYLISTS, chart_entry, playlist_item, track_fields
 
@@ -81,6 +82,7 @@ def crawl_playlists(session, crawled_ms):
             tr = _track(t)
             rec = playlist_item(f"spotify:{pid}", name or label, None, crawled_ms, pos, tr)
             rec['playlist_type'] = 'editorial' if pid in {x[0] for x in EDITORIAL_PLAYLISTS} else 'unknown'
+            rec['playlist_url'] = f'https://open.spotify.com/playlist/{pid}'
             yield TOPIC_PLAYLISTS, tr["track_key"], rec
         log.info("spotify playlist %s: %d tracks", name or label, len(tracks))
 
@@ -122,16 +124,19 @@ def crawl_kworb_daily(session, crawled_ms, country=os.getenv("KWORB_COUNTRY", "v
                  or len({x['track_id'] for x in rows}) != len(rows)
                  or len({x['rank'] for x in rows}) != len(rows)):
         raise ValueError('Kworb chart contains invalid ranks or duplicate identities')
+    if any(x[field] is not None and x[field] < 0 for x in rows for field in ('streams', 'total')):
+        raise ValueError('Kworb stream counts must be nonnegative')
+    heading = ' '.join(re.findall(r'<span class="pagetitle">(.*?)</span>', r.text, re.S))
+    period = re.search(r'\b(20\d{2}/\d{2}/\d{2})\b', heading)
+    source_period = date.fromisoformat(period.group(1).replace('/', '-')).isoformat() if period else None
     for x in rows:
         tr = track_fields(x["title"], x["artists"], "spotify", platform_id=x["track_id"],
                           url=f"https://open.spotify.com/track/{x['track_id']}")
         rec = chart_entry(
             f"spotify_daily_streams_{country}", crawled_ms, x["rank"], max(y['rank'] for y in rows), tr, previous_rank=x["prev"],
             metric_name="streams", metric_value=x["streams"], total_plays=x["total"], scope=country.upper())
-        heading = ' '.join(re.findall(r'<span class="pagetitle">(.*?)</span>', r.text, re.S))
-        date = re.search(r'\b(20\d{2}/\d{2}/\d{2})\b', heading)
         rec.update(data_provider='spotify_kworb', country_code=country.upper(), period_type='daily',
-                   source_period=date.group(1).replace('/', '-') if date else None,
+                   source_period=source_period,
                    source_url=f'https://kworb.net/spotify/country/{country}_daily.html')
         yield TOPIC_CHARTS, tr["track_key"], rec
     log.info("kworb spotify daily %s: %d rows", country, len(rows))
@@ -139,4 +144,14 @@ def crawl_kworb_daily(session, crawled_ms, country=os.getenv("KWORB_COUNTRY", "v
 
 def crawl_countries(session, crawled_ms):
     from common import crawl_markets
-    yield from crawl_markets(session, crawled_ms, crawl_kworb_daily)
+    def bounded_chart(session, crawled_ms, country):
+        limit = max(1, min(200, int(os.getenv('COUNTRY_CHART_LIMIT', '20'))))
+        rows = list(crawl_kworb_daily(session, crawled_ms, country))
+        selected = [row for row in rows if row[2]['rank'] <= limit]
+        for topic, key, record in selected:
+            record['source_chart_size'] = record['chart_size']
+            record['chart_size'] = len(selected)
+            record['chart_id'] += f'_top{limit}'
+            record['chart_family'] = f'spotify_daily_streams_top{limit}'
+            yield topic, key, record
+    yield from crawl_markets(session, crawled_ms, bounded_chart)

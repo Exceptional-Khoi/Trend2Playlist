@@ -11,7 +11,7 @@ import re
 import sys
 import time
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Literal, Optional
 from urllib.parse import quote
 
@@ -63,6 +63,9 @@ async def lifespan(_app):
 
 app = FastAPI(title="VN Music Pulse API", version="1.0", lifespan=lifespan)
 _cache = {}
+# Raw-history reads and snapshot analysis can each hold a large working set.
+# Bound those jobs per process; health/static routes never acquire this lock.
+_insight_work_lock = asyncio.Lock()
 
 
 # ------------------------------------------------------------------ helpers
@@ -390,6 +393,24 @@ async def index():
     return FileResponse(os.path.join(STATIC_DIR, "insights.html"))
 
 
+def insight_read_query(feature, days, as_of):
+    """Query only the requested data window; legacy unindexed envelopes remain readable."""
+    end = datetime.combine(date.fromisoformat(as_of) + timedelta(days=1), datetime.min.time(), timezone.utc) if as_of else datetime.now(timezone.utc)
+    start = end - timedelta(days=days)
+    def missing(field):return {'bool': {'must_not': [{'exists': {'field': field}}]}}
+    crawl_range = {'range': {'insight_crawled_ms': {'gte': int(start.timestamp()*1000), 'lt': int(end.timestamp()*1000)}}}
+    time_query = {'bool': {'minimum_should_match': 1, 'should': [crawl_range, missing('insight_crawled_ms')]}}
+    if feature == 'countries':
+        day_end = date.fromisoformat(as_of) if as_of else datetime.now(timezone.utc).date()
+        time_query = {'bool': {'minimum_should_match': 1, 'should': [
+            {'range': {'insight_period': {'gte': (day_end-timedelta(days=days-1)).isoformat(), 'lte': day_end.isoformat()}}},
+            {'bool': {'filter': [missing('insight_period'), time_query]}}]}}
+    types = ['playlist_item'] if feature == 'playlists' else ['chart_entry']
+    return {'bool': {'filter': [
+        {'bool': {'minimum_should_match': 1, 'should': [{'terms': {'insight_type': types}}, missing('insight_type')]}},
+        time_query]}}
+
+
 @app.get("/api/insights/{feature}")
 async def insight_api(feature: str, days: int = Query(30, ge=1, le=365), as_of: Optional[str] = None,
                       countries: str = '', chart_date: Optional[str] = None,
@@ -410,6 +431,21 @@ async def insight_api(feature: str, days: int = Query(30, ge=1, le=365), as_of: 
     except ValueError:
         raise HTTPException(400, 'Ngày phải theo YYYY-MM-DD')
     mode = insight_backend()
+    response_key = ('insight-response', mode, feature, days, as_of, tuple(cs), chart_date, top_n, track, genre)
+    if mode == 'elasticsearch':
+        hit = _cache.get(response_key)
+        if hit and time.time() - hit[0] < 20:
+            return hit[1]
+    async with _insight_work_lock:
+        return await execute_insight(feature, days, as_of, cs, chart_date, top_n, track, genre, mode, response_key)
+
+
+async def execute_insight(feature, days, as_of, cs, chart_date, top_n, track, genre, mode, response_key):
+    # A matching request may have completed while this one waited for its turn.
+    if mode == 'elasticsearch':
+        hit = _cache.get(response_key)
+        if hit and time.time() - hit[0] < 20:
+            return hit[1]
     if mode == 'elasticsearch':
         records = []
         raw_count = 0
@@ -418,7 +454,7 @@ async def insight_api(feature: str, days: int = Query(30, ge=1, le=365), as_of: 
         scroll = None
         try:
             response = await es.post('/music-insight-raw/_search', params={'scroll': '1m'},
-                                     json={'size': 1000, 'sort': ['_doc'], 'query': {'match_all': {}}})
+                                     json={'size': 1000, 'sort': ['_doc'], 'query': insight_read_query(feature, days, as_of)})
             response.raise_for_status()
             page = response.json()
             while True:
@@ -447,7 +483,7 @@ async def insight_api(feature: str, days: int = Query(30, ge=1, le=365), as_of: 
                 raise HTTPException(422, 'Không có bản ghi raw hợp lệ; kiểm tra dữ liệu cách ly')
         except httpx.HTTPError:
             raise HTTPException(503, 'Chưa đọc được music-insight-raw; kiểm tra streaming/import dữ liệu.')
-        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        except (ValueError, TypeError, KeyError, AttributeError, OverflowError) as exc:
             raise HTTPException(422, 'Dữ liệu raw Elasticsearch không đúng schema') from exc
         finally:
             if scroll:
@@ -467,10 +503,16 @@ async def insight_api(feature: str, days: int = Query(30, ge=1, le=365), as_of: 
         result = await asyncio.to_thread(insights.analyze, records, feature, days, as_of,
                                         countries=cs, chart_date=chart_date, top_n=top_n,
                                         track=track, genre=genre)
+        del records
         json.dumps(result, allow_nan=False)
     except (ValueError, TypeError, KeyError, OverflowError, OSError) as exc:
         raise HTTPException(422, f'Dữ liệu không đúng schema: {type(exc).__name__}')
     result['data'] = metadata
+    if mode == 'elasticsearch':
+        keys = [k for k in _cache if isinstance(k, tuple) and k and k[0] == 'insight-response']
+        for key in sorted(keys, key=lambda k: _cache[k][0])[:-3]:
+            _cache.pop(key, None)
+        _cache[response_key] = (time.time(), result)
     return result
 
 class CommentRequest(BaseModel):
@@ -493,7 +535,8 @@ async def comment_tracks(days: int = Query(7, ge=1, le=365), as_of: Optional[dat
             if latest:
                 start, end = comment_topics.bounds(latest, days)
                 tracks = await comment_topics.select_comments(backend,start,end,None,sort,0)
-    except (OSError, ValueError, httpx.HTTPError, comment_topics.sqlite3.Error):
+    except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError, OverflowError,
+            httpx.HTTPError, comment_topics.sqlite3.Error):
         raise HTTPException(503,'Chưa đọc được bình luận.')
     return {'items':[{'key':k,'title':v} for k,v in tracks], 'as_of':comment_topics.utc_day(end-1)}
 
@@ -508,5 +551,6 @@ async def comment_report(request: CommentRequest):
             raise HTTPException(404,'Chưa có bình luận cho lựa chọn này.')
         return await comment_topics.summarize(rows,dict(track=request.track, start_ms=start,end_ms=end,
             sort=request.sort, sample_sorts=sorted({r.get('comment_sort') or 'unknown' for r in rows})))
-    except (OSError, ValueError, KeyError, IndexError, httpx.HTTPError, comment_topics.sqlite3.Error):
+    except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError, OverflowError,
+            httpx.HTTPError, comment_topics.sqlite3.Error):
         raise HTTPException(502,'Chưa thể hoàn tất báo cáo bình luận. Vui lòng thử lại.')

@@ -2,6 +2,8 @@
 
 Baseline: clean main `4ab6c756adb36ba96ec7c67883ce448bff928817`. Mỗi dòng là một testcase/family; cột Input liệt kê tham số. Node ID cho từng biến thể và kết quả thực tế được xuất sau collection vào `test_reports/full/case_results.json`. Hypothesis examples không bị đếm nhầm thành pytest test cases.
 
+**Đây là matrix baseline/regression model, không phải đặc tả dashboard hiện tại.** Các hàm exposure/Jaccard/feedback legacy được kiểm tra độc lập, không suy ra endpoint/UI còn tồn tại. Lấy testcase executable và JUnit mới cho số lượng/kết quả hiện hành; UI/API đang phục vụ xem tài liệu 09. G12 đã bổ sung asset `style.css` vào nhóm route đã nghỉ phải 404. Các regression mới cho dashboard, báo cáo, checkpoint và giới hạn bộ nhớ nằm trong `test_dashboard_refresh.py`, `test_stream_checkpoint_config.py`, `qa_phase1/` và `test_adv_insight_resource_limits.py`.
+
 | Test ID | Module/function | Requirement/invariant | Type | Priority | Input/precondition | Expected | Bug/risk | Dependency | Test file |
 |---|---|---|---|---|---|---|---|---|---|
 | A01 | analytics/test_lifecycle_states | Three observed ranks determine direction or stability | state-transition | P1 | Ranks [8,5,2], [2,5,8], [4,6,5], [1,8,3], two periods; pytest.mark.parametrize('ranks,state', [([8, 5, 2], 'rising'), ([2, 5, 8], 'falling'), ([4, 6, 5], 'stable'), ([1, 8, 3], 'fluctuating'), ([3, 2], 'insufficient_data')]) | rising/falling/stable/fluctuating/insufficient_data | Incorrect result / unhandled data | offline | tests/adversarial/test_adv_analytics.py |

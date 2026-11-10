@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import time
+import traceback
 from datetime import datetime, timezone
 
 import requests
@@ -28,6 +29,29 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 log = logging.getLogger("music")
 
 
+class _CredentialFilter(logging.Filter):
+    """Redact the record itself so every attached handler sees safe diagnostics."""
+
+    def filter(self, record):
+        def redact(text):
+            text = str(text)
+            for name, value in os.environ.items():
+                if value and name.upper().endswith(('API_KEY', 'ACCESS_TOKEN', 'REFRESH_TOKEN', 'CLIENT_SECRET', 'PASSWORD')):
+                    text = text.replace(value, '[REDACTED]')
+            text = re.sub(r'(?i)([?&](?:key|api_key|apikey|access_token|refresh_token|token|sig|signature|client_secret|password)=)[^&#\s]+',
+                          r'\1[REDACTED]', text)
+            return re.sub(r'(?i)(authorization\s*[:=]\s*)[^\r\n]+', r'\1[REDACTED]', text)
+        record.msg, record.args = redact(record.getMessage()), ()
+        if record.exc_info:
+            record.exc_text = redact(''.join(traceback.format_exception(*record.exc_info)))
+            record.exc_info = None
+        elif record.exc_text:
+            record.exc_text = redact(record.exc_text)
+        if record.stack_info:
+            record.stack_info = redact(record.stack_info)
+        return True
+
+
 def setup_logging():
     # Windows terminals commonly default to cp1252, which cannot print Vietnamese
     # titles.  A debug/stdout crawl must never fail because of its output codec.
@@ -37,6 +61,9 @@ def setup_logging():
             reconfigure(encoding="utf-8", errors="backslashreplace")
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"),
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stdout)
+    for handler in logging.getLogger().handlers:
+        if not any(isinstance(filter_, _CredentialFilter) for filter_ in handler.filters):
+            handler.addFilter(_CredentialFilter())
 
 
 def http_session():
@@ -215,18 +242,28 @@ def playlist_item(playlist_id, playlist_name, genre_hint, crawled_ms, position, 
 
 def crawl_markets(session, crawled_ms, fetch_chart):
     failed = []
-    for country in os.getenv('COUNTRY_MARKETS', 'vn,th,id,us,jp,kr,sg,my,ph,tw,hk,in,au,nz,gb,de,fr,it,es,nl,se,no,fi,dk,pl,ca,mx,br,ar,cl,co,pe,za,tr').split(','):
+    # Stop a globally blocked provider; unsupported individual countries are skipped.
+    blocked = 0
+    default_markets = 'vn,th,id,us,jp,kr,sg,my,ph,tw,hk,in,au,nz,gb,de,fr,it,es,nl,se,no,fi,dk,pl,ca,mx,br,ar,cl,co,pe,za,tr,at,be,ch,pt,ie,gr,cz,hu,ro,bg,ua,eg,sa,ae,il,ng,ke,ma,pk,lk,kh,kz,rs,hr,sk,lt,lv,ee,is,lu,mt,cy,do,ec,cr,pa,uy,gt,hn,sv,bo,py'
+    for country in os.getenv('COUNTRY_MARKETS', default_markets).split(','):
         country = country.strip().lower()
         if not re.fullmatch('[a-z]{2}', country):
             raise ValueError('Invalid country ISO')
         count = 0
+        interrupted = False
         try:
             for _, _, record in fetch_chart(session, crawled_ms, country):
                 count += 1
-                yield 'music.country-charts', record['platform_id'], record
+                yield 'music.country-charts', record.get('platform_id') or record['track_key'], record
+            if count:blocked = 0
         except Exception as exc:
+            interrupted = True
             logging.getLogger(__name__).warning('%s %s: %s', fetch_chart.__name__, country, exc)
-        if not count:
+            status = getattr(getattr(exc, 'response', None), 'status_code', None)
+            blocked = blocked + 1 if isinstance(exc, (requests.Timeout, requests.ConnectionError)) or status in (401,403,429,500,502,503) else 0
+        if interrupted or not count:
             failed.append(country)
+        if blocked >= int(os.getenv('COUNTRY_FAILURE_LIMIT', '3')):
+            raise RuntimeError('Country provider blocked/unreachable; other providers will continue')
     if failed:
         raise RuntimeError('Country charts unavailable: ' + ','.join(failed))

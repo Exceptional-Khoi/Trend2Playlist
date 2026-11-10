@@ -3,8 +3,7 @@
 #   .\scripts\run.ps1 deploy -Profile full
 #   .\scripts\run.ps1 bootstrap-data
 #   .\scripts\run.ps1 update-code
-#   .\scripts\run.ps1 test-fault-tolerance kafka
-#   .\scripts\run.ps1 test-scalability stream
+# Cloud E2E/reliability: python scripts/run-cloud-tests.py --help (explicit owned scope).
 param(
     [Parameter(Mandatory = $true, Position = 0)][string]$Script,
     [string]$Profile = "lite",

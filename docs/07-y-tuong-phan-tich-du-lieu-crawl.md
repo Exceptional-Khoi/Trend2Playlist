@@ -1,5 +1,7 @@
 # Báo cáo 7 ý tưởng phân tích dữ liệu crawl
 
+> **Thiết kế ý tưởng ban đầu, không phải trạng thái triển khai hiện tại.** Các quyết định màn hình đã được thay thế bởi [bốn tính năng đang phục vụ](09-four-features-implementation.md). Những câu “chưa triển khai” bên dưới chỉ nói về thời điểm viết ý tưởng tháng 10; không phải kết luận về code đang bàn giao.
+
 Cập nhật ngày **08/10/2026** theo các quyết định đã thống nhất. Đây là thiết kế chức năng và đánh giá dữ liệu để triển khai; các hàm phân tích chưa được cài đặt trong lần cập nhật này. Riêng ý tưởng 4 đã được thử bằng các lượt crawl thật, gồm nguồn bổ sung, và lưu dữ liệu mẫu.
 
 Các ý tưởng 1, 3, 4, 5 và 6 dùng thống kê và quy tắc. Ý tưởng 7 gọi API của một LLM có sẵn để đọc bình luận; **không huấn luyện hoặc fine-tune mô hình ML/DL**.
@@ -134,10 +136,10 @@ Một phép so sánh đã tính được: **top 50 Spotify Việt Nam và Thái 
 
 #### Bằng chứng và cách chạy lại
 
-- [Tóm tắt crawl, số trường có dữ liệu và các so sánh](../out/country-feasibility-20261007T154533Z/summary.json).
-- [Mẫu Spotify Việt Nam — 200 dòng](../out/country-feasibility-20261007T154533Z/records/spotify_kworb_vn.jsonl); [Thái Lan — 200 dòng](../out/country-feasibility-20261007T154533Z/records/spotify_kworb_th.jsonl).
-- [Response gốc từ Kworb Việt Nam](../out/country-feasibility-20261007T154533Z/http/spotify_kworb_vn.html), kèm response của các nước khác trong cùng thư mục `http/`.
-- [Kết quả thử lại Apple Thái Lan và Nhật](../out/country-feasibility-20261007T155422Z/summary.json).
+- Tóm tắt crawl, số trường có dữ liệu và các so sánh (`out/country-feasibility-20261007T154533Z/summary.json`, local archive).
+- Mẫu Spotify Việt Nam — 200 dòng (`out/country-feasibility-20261007T154533Z/records/spotify_kworb_vn.jsonl`, local archive); Thái Lan — 200 dòng (`out/country-feasibility-20261007T154533Z/records/spotify_kworb_th.jsonl`, local archive).
+- Response gốc từ Kworb Việt Nam (`out/country-feasibility-20261007T154533Z/http/spotify_kworb_vn.html`, local archive), kèm response của các nước khác trong cùng thư mục `http/`.
+- Kết quả thử lại Apple Thái Lan và Nhật (`out/country-feasibility-20261007T155422Z/summary.json`, local archive).
 - [Script thử crawl](../scripts/crawl-country-feasibility.py): lưu response gốc, JSONL chuẩn hóa và summary; không cần API key.
 
 ```powershell
@@ -175,12 +177,12 @@ python scripts\crawl-country-feasibility.py --reparse --output-dir out\country-f
 
 Dữ liệu và script:
 
-- [Tổng hợp dữ liệu chuẩn hóa, kiểm tra và so sánh](../out/country-additional-20261007T175501Z/summary.json).
-- [Log HTTP và lỗi](../out/country-additional-20261007T175501Z/fetch-summary.json).
-- [KKBOX TW](../out/country-additional-20261007T175501Z/records/kkbox_tw.jsonl), [SG](../out/country-additional-20261007T175501Z/records/kkbox_sg.jsonl), [HK](../out/country-additional-20261007T175501Z/records/kkbox_hk.jsonl), [JP](../out/country-additional-20261007T175501Z/records/kkbox_jp.jsonl).
-- [RIAS Singapore — BXH chính](../out/country-additional-20261007T175501Z/records/rias_sg_national.jsonl), [Regional](../out/country-additional-20261007T175501Z/records/rias_sg_regional.jsonl).
-- [Trends country — ô có dữ liệu](../out/country-additional-20261007T175501Z/records/google_trends_country_with_data.jsonl).
-- [Lượt Apple mới](../out/country-feasibility-20261007T172112Z/summary.json), [Mỹ](../out/country-feasibility-20261007T172112Z/records/apple_music_us.jsonl), [Nhật](../out/country-feasibility-20261007T172112Z/records/apple_music_jp.jsonl).
+- Tổng hợp dữ liệu chuẩn hóa, kiểm tra và so sánh (`out/country-additional-20261007T175501Z/summary.json`, local archive).
+- Log HTTP và lỗi (`out/country-additional-20261007T175501Z/fetch-summary.json`, local archive).
+- KKBOX TW (`out/country-additional-20261007T175501Z/records/kkbox_tw.jsonl`, local archive), SG (`out/country-additional-20261007T175501Z/records/kkbox_sg.jsonl`, local archive), HK (`out/country-additional-20261007T175501Z/records/kkbox_hk.jsonl`, local archive), JP (`out/country-additional-20261007T175501Z/records/kkbox_jp.jsonl`, local archive).
+- RIAS Singapore — BXH chính (`out/country-additional-20261007T175501Z/records/rias_sg_national.jsonl`, local archive), Regional (`out/country-additional-20261007T175501Z/records/rias_sg_regional.jsonl`, local archive).
+- Trends country — ô có dữ liệu (`out/country-additional-20261007T175501Z/records/google_trends_country_with_data.jsonl`, local archive).
+- Lượt Apple mới (`out/country-feasibility-20261007T172112Z/summary.json`, local archive), Mỹ (`out/country-feasibility-20261007T172112Z/records/apple_music_us.jsonl`, local archive), Nhật (`out/country-feasibility-20261007T172112Z/records/apple_music_jp.jsonl`, local archive).
 - [Crawler bổ sung](../scripts/crawl-country-additional.py): không cần API key, giữ raw response. Chạy mới bằng python scripts\crawl-country-additional.py; lấy endpoint RIAS bằng --followup --output-dir <thư mục vừa tạo>; chuẩn hóa offline bằng --reparse --output-dir <thư mục>.
 
 Dữ liệu mới được lưu riêng trong out/; chưa tích hợp vào Kafka/Spark/API của ứng dụng.

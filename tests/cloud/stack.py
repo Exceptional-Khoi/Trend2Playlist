@@ -135,7 +135,7 @@ def resources(scope,source):
     worker['spec']['template']['spec']['containers'][0]['env'].append({'name':'POD_IP','valueFrom':{'fieldRef':{'fieldPath':'status.podIP'}}})
     worker['spec']['template']['spec']['containers'][0]['readinessProbe']={'tcpSocket':{'port':8081},'periodSeconds':5,'initialDelaySeconds':10}
     driver=deployment('speed-layer',SPARK_IMAGE,['exec bash /opt/app/submit.sh speed_layer.py cloud-e2e-speed 1'],
-        memory='1536Mi',request='896Mi',cpu='500m',env={'DRIVER_MEMORY':'700m','SPEED_QUERIES':'ingest,plays,mentions,charts,recommend'},
+        memory='1536Mi',request='896Mi',cpu='500m',env={'DRIVER_MEMORY':'700m','SPEED_QUERIES':'ingest,plays,mentions,comments,charts,recommend'},
         volumes=[{'name':'code','configMap':{'name':'spark-code'}}],mounts=[{'name':'code','mountPath':'/opt/app'}])
     c=driver['spec']['template']['spec']['containers'][0];c['envFrom']=[{'configMapRef':{'name':'music-env'}}]
     c['env'].append({'name':'POD_IP','valueFrom':{'fieldRef':{'fieldPath':'status.podIP'}}})
@@ -146,8 +146,11 @@ def resources(scope,source):
         memory='384Mi',request='128Mi',cpu='250m',volumes=[{'name':'code','configMap':{'name':'serving-code'}}],mounts=[{'name':'code','mountPath':'/app'}])
     api_c=api['spec']['template']['spec']['containers'][0];api_c['workingDir']='/app';api_c['envFrom']=[{'configMapRef':{'name':'music-env'}}]
     api_c['env'].append({'name':'STATIC_DIR','value':'/static'})
+    api_c['env'].append({'name':'COMMENT_REPORT_DB','value':'/var/lib/music-reports/reports.sqlite'})
     api['spec']['template']['spec']['volumes'].append({'name':'static','configMap':{'name':'dashboard-static'}})
     api_c['volumeMounts'].append({'name':'static','mountPath':'/static'})
+    api['spec']['template']['spec']['volumes'].append({'name':'comment-reports','emptyDir':{'sizeLimit':'100Mi'}})
+    api_c['volumeMounts'].append({'name':'comment-reports','mountPath':'/var/lib/music-reports'})
     api_c['readinessProbe']={'httpGet':{'path':'/api/health','port':8000},'initialDelaySeconds':15,'periodSeconds':5}
     api_c['livenessProbe']={'httpGet':{'path':'/api/live','port':8000},'initialDelaySeconds':45,'periodSeconds':10}
     service('music-api',[8000])

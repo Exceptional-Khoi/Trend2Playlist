@@ -54,13 +54,15 @@ def main():
     parser.add_argument('--collect-only',action='store_true')
     parser.add_argument('--prepare-only',action='store_true',help='Readiness and cleanup, no test execution')
     args=parser.parse_args();os.chdir(SOURCE)
+    if args.mode=='gke-performance' and not args.collect_only:
+        parser.error('BLOCKED: CP-001/CP-002 are deferred; no executable load/soak cases. No cloud resources created.')
     import pytest
     report=args.report_dir.resolve();report.mkdir(parents=True,exist_ok=True)
     if args.collect_only:
         return int(pytest.main(['tests/cloud','--collect-only','-q','--strict-markers','-p','no:cacheprovider']))
     if args.mode=='local':
         recorder=Results(report)
-        paths=[str(p) for p in (SOURCE/'tests').glob('test_*.py')]+['tests/adversarial','tests/cloud/test_harness_safety.py']
+        paths=['tests']  # Includes current regression additions; cloud cases remain opt-in/skipped.
         return int(pytest.main(paths+['-ra','--junitxml='+str(report/'junit.xml'),'-p','no:cacheprovider'],plugins=[recorder]))
     if args.scope is None:parser.error('GKE modes require an explicit approved --scope JSON')
     from cloud.harness import Harness

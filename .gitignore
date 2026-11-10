@@ -8,3 +8,18 @@ out/
 .ivy2/
 spark-warehouse/
 metastore_db/
+.coverage
+qa_artifacts/
+tmp/qa-dev-*/
+tmp/gke-deploy/music-kubeconfig.yaml
+tmp/gke-deploy/gke_gcloud_auth_plugin_cache
+.pytest_cache/
+.env.*
+!.env.example
+# Local deployment snapshots can include credentials, cluster dumps and large archives.
+/tmp/
+/test_reports/
+/handover/
+/local-backup-*/
+/docs/*.zip
+/docs/*.pdf

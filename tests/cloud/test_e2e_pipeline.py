@@ -3,6 +3,8 @@ import datetime as dt
 import itertools
 import json
 import math
+from pathlib import Path
+import re
 import time
 import urllib.parse
 
@@ -92,49 +94,109 @@ def test_lifecycle_partial_then_backfill(stack,dataset):
     assert body['items'][0]['status']!='left_chart'
 
 
-@case('CE-005','Editorial placement score and 1/3/7 day late backfill',40)
+@case('CE-005','Active playlist ranking counts unique memberships across captures',40)
 def test_playlist_backfill_independent_score(stack,dataset):
-    track=dataset.track();base=dataset.day-dt.timedelta(days=8)
-    capture=int(dt.datetime.combine(base,dt.time(12),dt.timezone.utc).timestamp()*1000)
-    chart=[dataset.chart(track,10,10,base),dataset.chart(track,7,10,base+dt.timedelta(days=1))]
-    playlists=[{'record_type':'playlist_item','source':'spotify','platform_id':track,'track_key':track,
-       'playlist_id':dataset.track('p'+str(i)),'playlist_type':kind,'position':pos,'playlist_size':10,
-       'genre_hint':'Pop','crawled_ms':capture,'title':'QA','artists':['QA']}
-       for i,(pos,kind) in enumerate([(1,'editorial'),(3,'editorial'),(1,'chart_mirror'),(1,'unknown')])]
-    stack.await_records(dataset.publish(chart)+dataset.publish(playlists+playlists,'music.playlists'))
-    body=dataset.ready('playlists',lambda b:any(x['track_id']==track for x in b['items']),genre='Pop')
-    rows=[x for x in body['items'] if x['track_id']==track]
-    assert {x['lag_days'] for x in rows}=={1}
-    late=[dataset.chart(track,r,10,base+dt.timedelta(days=d)) for d,r in [(3,9),(7,10)]]
-    stack.await_records(dataset.publish(late))
-    body=dataset.ready('playlists',lambda b:len([x for x in b['items'] if x['track_id']==track])==3,genre='Pop')
-    rows=[x for x in body['items'] if x['track_id']==track]
-    assert {x['lag_days']:x['rank_improvement'] for x in rows}=={1:3,3:1,7:0}
-    assert all(math.isclose(x['placement_score'],1/math.log2(2)+1/math.log2(4)) and x['playlist_count']==2 for x in rows)
+    playlists=[]
+    title='QA membership '+dataset.prefix
+    for i,kind in enumerate(('editorial','editorial','chart_mirror','unknown')):
+        for position in range(1,6):
+            playlists.append({'record_type':'playlist_item','source':'spotify',
+                'platform_id':dataset.track(str(position)), 'playlist_id':dataset.track('p'+str(i)),
+                'playlist_type':kind,'position':position,'playlist_size':5,'crawled_ms':dataset.now,
+                'title':title if position==1 else title+' '+str(position),'artists':['QA']})
+    stack.await_records(dataset.publish(playlists+playlists,'music.playlists'))
+    body=dataset.ready('playlists',lambda b:any(x['title']==title for x in b['items']))
+    row=next(x for x in body['items'] if x['title']==title)
+    assert row['playlist_count']==4  # New membership requirement includes editorial, unknown and chart mirrors.
+    recrawl=[dict(r,crawled_ms=dataset.now+1000) for r in playlists]
+    stack.await_records(dataset.publish(recrawl,'music.playlists'))
+    body=dataset.ready('playlists',lambda b:any(x['title']==title for x in b['items']))
+    assert next(x for x in body['items'] if x['title']==title)['playlist_count']==4
 
 
-@case('CE-006','Three-country Unicode set oracle and incomplete country backfill',50)
+@case('CE-006','Active country winners obey ordinal scores and require complete charts',50)
 def test_country_independent_set_oracle(stack,dataset):
     a,b,c,d=[dataset.track(x) for x in ('đêm🎵','b','c','d')]
     countries={'VN':[a,b,c],'TH':[a,c,d],'US':[b,c,d]}
-    rows=[r for country,tracks in countries.items() for r in dataset.chart_rows(tracks,country,chart_family=dataset.prefix)]
+    day=dataset.day-dt.timedelta(days=20)
+    capture=int(dt.datetime.combine(day,dt.time(12),dt.timezone.utc).timestamp()*1000)
+    rows=[r for country,tracks in countries.items() for r in dataset.chart_rows(tracks,country,day=day,
+        crawled_ms=capture,chart_family=dataset.prefix)]
     missing=rows.pop();stack.await_records(dataset.publish(rows,'music.country-charts'))
-    response=dataset.insights('countries',countries='VN,TH,US',chart_date=dataset.day.isoformat(),top_n=3)
-    assert response['status']==200 and response['body']['overlap']==[]
+    response=dataset.insights('countries',countries='VN,TH,US',as_of=day.isoformat(),days=1)
+    assert response['status']==200
+    assert {x['country'] for x in response['body']['items']}=={'VN','TH'}
     stack.await_records(dataset.publish([missing],'music.country-charts'))
-    body=dataset.ready('countries',lambda b:len(b['overlap'])==3,countries='VN,TH,US',chart_date=dataset.day.isoformat(),top_n=3)
-    for item in body['overlap']:
-        x,y=item['countries'];sa,sb=set(countries[x]),set(countries[y])
-        assert item['common']==len(sa&sb)
-        assert math.isclose(item['jaccard'],len(sa&sb)/len(sa|sb))
-    for item in body['items']:
-        for country,tracks in countries.items():
-            value=item['countries'][country]
-            if item['track_id'] not in tracks:assert value is None
-            else:
-                rank=tracks.index(item['track_id'])+1
-                assert value['rank']==rank and math.isclose(value['rank_score'],(4-rank)/3)
-                assert math.isclose(value['chart_stream_share'],1/3)
+    body=dataset.ready('countries',lambda b:len(b['items'])==3,countries='VN,TH,US',as_of=day.isoformat(),days=1)
+    by_country={x['country']:x for x in body['items']}
+    for country,tracks in countries.items():
+        expected=dataset.chart(tracks[0],country=country)['title']
+        assert by_country[country]['title']==expected
+        assert math.isclose(by_country[country]['score'],1.0)
+
+
+@case('CE-007','Real comment ingestion and sample selection work without a paid model call',60,
+      services='Kafka,Spark,HDFS,Elasticsearch,FastAPI',expected='Exact comment reaches typed index and track selector; missing model credentials fail503')
+def test_comment_ingestion_without_model_charge(stack,dataset):
+    track=dataset.track()
+    record={'record_type':'comment','source':'youtube','video_id':dataset.track('video'),
+        'track_key':track,'title':'QA comment '+dataset.prefix,'comment_id':dataset.track('comment'),
+        'comment_sort':'recent','published_ms':dataset.now,'crawled_ms':dataset.now,
+        'text':'Hay quá 🎵 <script>untrusted</script>','like_count':0,'is_reply':False,
+        'author_hash':dataset.track('synthetic-author')}
+    stack.await_records(dataset.publish([record],'music.comments'))
+    docs=poll(lambda:hits(stack,'music-comments',{'term':{'track_key':track}}),timeout=120,interval=3,guard=stack.guard)
+    assert len(docs)==1 and docs[0]['_source']['comment_id']==record['comment_id']
+    assert docs[0]['_source']['text']==record['text']
+    query=urllib.parse.urlencode({'as_of':dataset.as_of,'days':30,'sort':'recent'})
+    response=stack.http('/api/comments/tracks?'+query)
+    assert response['status']==200
+    assert {'key':track,'title':record['title']} in response['body']['items']
+    assert 'OPENAI_API_KEY' not in stack.get('ConfigMap','music-env')['data']
+    response=stack.http('/api/comments/report',method='POST',body={
+        'track':track,'as_of':dataset.as_of,'days':30,'sort':'recent'})
+    assert response['status']==503,'No model credentials are mounted; paid model calls are forbidden'
+
+
+@case('CE-008','Real dashboard renders all four features against the owned cloud API',70,
+      services='Browser,FastAPI,Kafka,Spark,HDFS,Elasticsearch',expected='Actual DOM from real API data, safe report failure without model credentials')
+def test_actual_dashboard_four_features(stack):
+    playwright=pytest.importorskip('playwright.sync_api',reason='BLOCKED: Playwright unavailable')
+    edge=Path(r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe')
+    if not edge.exists():pytest.skip('BLOCKED: Edge unavailable')
+    process,log=stack._spawn(['kubectl','--context='+stack.scope['context'],'-n',stack.namespace,
+        'port-forward','service/music-api',':8000','--address=127.0.0.1'],'browser-api-forward')
+    def address():
+        text=log.read_text(encoding='utf-8',errors='replace')
+        match=re.search(r'127\.0\.0\.1:(\d+)',text)
+        if process.poll() is not None:raise RuntimeError(text[-500:])
+        return 'http://127.0.0.1:'+match.group(1) if match else None
+    url=poll(address,timeout=30,interval=.2)
+    with playwright.sync_playwright() as driver:
+        browser=driver.chromium.launch(executable_path=str(edge),headless=True)
+        try:
+            page=browser.new_page();errors=[]
+            page.on('pageerror',lambda error:errors.append(str(error)))
+            page.route('**/*',lambda route:route.continue_() if route.request.url.startswith(url+'/') else route.abort())
+            page.goto(url+'/',wait_until='domcontentloaded')
+            page.wait_for_selector('.home-grid',timeout=30000)
+            observed={}
+            for feature in ('lifecycle','playlists','countries'):
+                page.locator('[data-feature='+feature+']').click()
+                page.wait_for_selector('tbody tr',timeout=30000)
+                if feature=='countries':page.wait_for_selector('svg path.has-data',timeout=30000)
+                observed[feature]=page.locator('#results').inner_text()[:1000]
+            page.locator('[data-feature=comments]').click()
+            button=page.locator('.report-button')
+            button.wait_for(timeout=30000);button.click()
+            page.get_by_text('Chưa thiết lập khóa OpenAI trên máy chủ.',exact=True).wait_for(timeout=30000)
+            assert button.is_enabled()
+            assert errors==[],errors
+            observed['comments']=page.locator('#results').inner_text()[:1000]
+            page.screenshot(path=str(stack.report/'owned-dashboard.png'),full_page=True)
+            stack.save('owned_browser_features.json',{'features':observed,'page_errors':errors,
+                'backend':'Real owned namespace API; no mocked responses or paid model calls'})
+        finally:browser.close()
 
 
 @case('CE-009','Logical replay on distinct partitions agrees between realtime and insight',80)
@@ -212,10 +274,10 @@ def test_batch_rerun_equivalence(stack):
 
 @case('CE-015','Malformed Kafka JSON cannot poison all independent insights',990,priority='P1')
 def test_malformed_poison_pill_isolation(stack,dataset):
-    valid=dataset.event('valid');bad=dataset.messages([valid],'music.events')[0];bad.pop('record');bad['raw']='{"broken":'
+    valid=dataset.chart(dataset.track('valid'));bad=dataset.messages([valid],'music.charts')[0];bad.pop('record');bad['raw']='{"broken":'
     acks=[]
     try:
-        acks=stack.publish([bad]+dataset.messages([valid],'music.events'))
+        acks=stack.publish([bad]+dataset.messages([valid],'music.charts'))
         stack.await_records(acks)
         response=dataset.insights('lifecycle');stack.trace('poison_api','OBSERVED',response)
         assert response['status']==200,'A single malformed Kafka message made chart analysis unavailable'

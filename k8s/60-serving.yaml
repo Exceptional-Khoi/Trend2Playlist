@@ -42,6 +42,7 @@ spec:
                 secretKeyRef: { name: music-secrets, key: COMMENT_DAILY_LIMIT, optional: true }
             - { name: INSIGHT_BACKEND, value: elasticsearch }
             - { name: STATIC_DIR, value: /static }
+            - { name: COMMENT_REPORT_DB, value: /var/lib/music-reports/reports.sqlite }
             - { name: MERGE_WEIGHTS, value: "0.6,0.3,0.1" }
           ports:
             - { name: http, containerPort: 8000 }
@@ -59,11 +60,15 @@ spec:
           volumeMounts:
             - { name: code, mountPath: /app }
             - { name: static, mountPath: /static }
+            - { name: comment-reports, mountPath: /var/lib/music-reports }
       volumes:
         - name: code
           configMap: { name: serving-code }
         - name: static
           configMap: { name: dashboard-static }
+        # Cache/quota storage is per pod; no cross-replica or pod-replacement durability.
+        - name: comment-reports
+          emptyDir: { sizeLimit: 100Mi }
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget

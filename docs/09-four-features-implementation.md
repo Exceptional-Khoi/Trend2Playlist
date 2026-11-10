@@ -1,43 +1,31 @@
-# Bốn tính năng theo tài liệu 07 — 02/11/2026
+# Bốn tính năng đang phục vụ
 
-Phạm vi: ý tưởng 1, 3, 4, 6. Ý tưởng 2 bỏ, 5 chưa chốt; ý tưởng 7 cần cấu hình nhà cung cấp LLM, không triển khai trong đợt này.
+Cập nhật 10/11/2026. Đây là hợp đồng hiện tại của dashboard; [tài liệu ý tưởng 07](07-y-tuong-phan-tich-du-lieu-crawl.md) là thiết kế ban đầu, không phải danh sách màn hình đang chạy.
 
-## Chạy cục bộ
+## Endpoint và dữ liệu
 
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r serving/requirements.txt -r crawler/requirements.txt pytest
-$env:INSIGHT_BACKEND='archive'
-.\.venv\Scripts\python.exe -X utf8 -m uvicorn api:app --app-dir serving --host 127.0.0.1 --port 8000
-```
+| UI | Endpoint | Dữ liệu chính |
+|---|---|---|
+| Thứ hạng bài hát | `GET /api/insights/lifecycle` | `chart_entry` theo nguồn/BXH/capture/kỳ nguồn |
+| Bài hát trong playlist | `GET /api/insights/playlists` | `playlist_item`, metadata tên/link/vị trí/loại |
+| Bản đồ âm nhạc | `GET /api/insights/countries` | BXH đủ hạng trong khoảng source period, nhiều nguồn |
+| Khán giả nói gì? | `GET /api/comments/tracks`, `POST /api/comments/report` | Bình luận đã chọn theo bài/khoảng ngày/sort |
 
-Mở http://127.0.0.1:8000. Đây là dashboard duy nhất, gồm bốn tính năng. Dashboard demo và giao diện cũ đã bị xóa; thao tác play/skip/like nằm ngay trong tab Phản hồi nghe.
+Dashboard không có tab phản hồi nghe hoặc nút gửi `/api/listen`. Không diễn giải thao tác mở link nghe thành thời lượng phát nhạc. `/legacy`, `/static/index.html`, `/static/app.js`, `/static/style.css` không thuộc giao diện bàn giao.
 
-Archive đọc các file country trong `out/country-*/records`, kết quả charts trong `out-test/*/charts`, `out/music.*.jsonl`, `out-test/*/music.*.jsonl`, sự kiện mẫu `output/user_events.jsonl` và thao tác web mới trong `out/insight-web-events.jsonl`. Có thể đặt `INSIGHT_DATA_DIR` để đọc thêm thư mục JSONL. Giữ nguyên timestamp; không giả vờ dữ liệu cũ là realtime. Nguồn events thiếu nhãn là `unknown`, không tự nhận là người dùng web.
+## Quy tắc chính
 
-## Nội dung thực hiện
+- **Vòng đời:** ba kỳ nguồn xác định để phân loại tăng/giảm/ổn định/dao động. Crawl nhiều lần cùng kỳ không tạo thêm kỳ. Chỉ xác nhận rời BXH khi kỳ tiếp theo đủ hạng và không có bài đó.
+- **Playlist:** đếm playlist ID khác nhau trong từng nguồn cho một bài trong cửa sổ; gồm editorial, genre collection, unknown và chart mirror. Hiện link có thật/canonical của nguồn, không đoán Zing slug. Kết quả là quan sát membership, không phải chứng minh playlist gây tăng hạng. `analyze_playlist_exposure` là hàm legacy có test riêng, không phải bảng hiện tại.
+- **Quốc gia:** mọi nước có dữ liệu hiện cùng lúc; bấm nước chỉ mở chi tiết. Tính điểm thứ hạng theo nguồn/ngày quan sát, dùng chart đủ hạng. Thiếu dữ liệu không phải 0. Các nguồn không cùng quần thể; iTunes Store không phải stream. Jaccard ở `compare_country_tastes` là hàm phân tích legacy, không phải response của bản đồ.
+- **Bình luận:** giới hạn mẫu, ngữ cảnh theo bài, structured output, tần suất keyword tính lại từ văn bản. Không dùng nhãn chung để lấp chỗ trống; mô tả chỉ áp dụng cho mẫu. Quota/cache theo SQLite từng pod; cần OpenAI key backend.
 
-| Tính năng | Phép tính và điều kiện |
-|---|---|
-| Vòng đời | Dùng toàn bộ raw trong cửa sổ; ID nền tảng trong từng BXH, gộp snapshot cùng kỳ nguồn, hạng tốt nhất, lịch sử, thời gian theo dõi. Ba kỳ: tăng/giảm liên tiếp, ổn định khi biên độ ≤3; chỉ xác nhận rời BXH sau snapshot đủ hạng. Chưa có kỳ nguồn thì hiển thị thiếu lịch sử. |
-| Playlist | Chỉ playlist editorial đã xác nhận; loại chart_mirror và unknown khỏi suy luận. Đếm playlist riêng biệt, tổng 1/log2(position+1), so cùng BXH ngày sau 1/3/7 ngày. Chỉ tính cặp đủ dữ liệu; trả số quan sát và trung vị cải thiện hạng. Không suy luận nhân quả. |
-| Country | Bản đầu Spotify qua Kworb, cùng ngày nguồn, cùng top N; ID Spotify, Jaccard, rank_score theo toàn bộ chart_size, tỷ trọng stream trong toàn BXH. Thiếu bài trả null. Snapshot thiếu hạng bị loại. |
-| Phản hồi | Khử trùng event_id, tách web/simulator/unknown, nhóm bài/thể loại/tỉnh/giờ VN; play/skip/like, user ID, skip/(play+skip). Không suy diễn thời lượng hay hoàn tất. Form ghi thao tác thật của người thử, không phát nhạc. |
+## Chế độ chạy và an toàn
 
-Ở chế độ archive, form gọi `/api/listen` và lưu thao tác web cục bộ; phản hồi ghi `mode=archive`. Không nói đã gửi Kafka. Mã tỉnh phải hợp lệ (ví dụ `ha-noi`). Ở chế độ Elasticsearch, API giữ luồng gửi Kafka và Spark cập nhật index raw.
+`INSIGHT_BACKEND=archive` đọc các JSONL trong các thư mục archive được cấu hình; dữ liệu mẫu không commit và không đổi timestamp để giả realtime. `INSIGHT_BACKEND=elasticsearch` đọc index pipeline, không tự fallback archive khi ES lỗi.
 
-## Pipeline và cloud
+API lọc type/time ở ES, giữ legacy envelope chưa index metadata đọc được qua normalizer. Raw cap 200.000 vẫn áp dụng; vượt cap trả 422. Query/schema không hợp lệ trả 400/422, dependency không đọc được trả lỗi kiểm soát. Có một tác vụ lịch sử nặng mỗi process để giảm OOM; cold latency vẫn đáng kể.
 
-- Job crawler mới `countries`, topic riêng `music.country-charts`: không đưa BXH nước ngoài vào điểm VN cũ.
-- CronJob `crawl-countries` mỗi 6 giờ. Kworb lưu `source_period`, `period_type`, country, provider, URL và độ dài hạng; Spotify Hot Hits được ghi editorial, playlist bổ sung chưa xác minh là unknown.
-- Speed layer bổ sung query `insight_raw` khi bật `ingest`, ghi nguyên JSON charts/playlists/events/country vào `music-insight-raw`. ID topic/partition/offset chống ghi trùng khi replay; checkpoint riêng.
-- Kubernetes API đặt `INSIGHT_BACKEND=elasticsearch`. Lỗi ES trả 503, không ngầm dùng archive. API hiện có giới hạn 200.000 raw records mỗi lần đọc; cần materialized batch views trước khi dùng dữ liệu lớn vượt mức này.
-- Deploy mới tạo topic và CronJob. Cluster cũ cần chạy lại job khởi tạo topic trước khi restart speed layer; apply manifest 53 và 60, cập nhật ConfigMap bằng update-code. Không xoá checkpoint HDFS.
-- Để nạp bằng chứng country cũ vào ES: chuyển tiếp cổng ES, chạy `python scripts/import-insight-archive.py --es http://127.0.0.1:9200`. Import giữ nguyên ngày và có ID ổn định.
+Streaming đưa charts/playlists/country vào `music-insight-raw`, bình luận vào `music-comments`; các raw topics vẫn được ingest vào HDFS. Events/simulator đi luồng backend riêng, không trộn vào raw insight hiện tại.
 
-## Kiểm thử và giới hạn
-
-Đã chạy 28/28 test đạt trên máy hiện tại. Đã kiểm tra bốn màn hình bằng trình duyệt, bảng country hiện 10 cặp quốc gia và 248 ID trong hợp top 50 của 5 nước. Một thao tác play kiểm thử với user `web-qa-20261102` đã được lưu riêng vào archive và xuất hiện đúng 1 play trong thống kê web. Đây là thao tác kiểm thử của ứng dụng, không phải lượt nghe audio thật. Hai test dùng archive thật sẽ skip nếu máy khác chưa có thư mục `out` (thư mục này không được commit).
-
-`python -m pytest tests -q`: kiểm tra luật vòng đời, snapshot thiếu, gộp kỳ trùng, cùng kỳ giữa nước, mẫu số stream, missing không phải zero, tách nguồn và khử trùng events, playlist và khoảng trễ, API/bộ lọc.
-
-Đối chiếu mẫu thật ngày nguồn 05/10/2026: VN–TH top 50 có 1 ID chung, Jaccard 1/99. Dữ liệu lịch sử playlist hiện chưa đủ nên trả thiếu dữ liệu; không dựng mẫu thành kết quả thật. Chưa chạy integration Kafka/Spark/ES hoặc triển khai Kubernetes trong đợt sửa này vì các dịch vụ đó chưa được khởi động. Cần kiểm chứng cụm trước khi coi thay đổi pipeline đã chạy end-to-end.
+Chạy/triển khai theo [hướng dẫn hiện tại](03-trien-khai.md), kiểm tra theo [tài liệu test](04-kiem-thu.md). Không dùng số liệu audit cũ làm cam kết độ phủ của một cluster mới.

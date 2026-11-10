@@ -80,7 +80,15 @@ if "ingest" in QUERIES:
     insight_raw = (kafka_stream([TOPICS['charts'], TOPICS['playlists'], 'music.country-charts'])
                    .select(F.concat_ws(':', 'topic', F.col('partition').cast('string'),
                                        F.col('offset').cast('string')).alias('doc_id'),
-                           F.col('value').cast('string').alias('value')))
+                           F.col('value').cast('string').alias('value'))
+                   .withColumn('insight_type', F.coalesce(F.get_json_object('value', '$.record_type'),
+                       F.when(F.get_json_object('value', '$.rank').isNotNull(), F.lit('chart_entry'))))
+                   .withColumn('insight_crawled_ms', F.coalesce(
+                       F.get_json_object('value', '$.ts_ms').cast('long'),
+                       F.get_json_object('value', '$.crawled_ms').cast('long')))
+                   .withColumn('insight_period', F.when(
+                       F.get_json_object('value', '$.source_period').rlike(r'^\d{4}-\d{2}-\d{2}$'),
+                       F.get_json_object('value', '$.source_period'))))
     started.append(insight_raw.writeStream.outputMode('append').queryName('insight_raw')
                    .foreachBatch(lambda df, _: es_write(df, 'music-insight-raw', 'doc_id'))
                    .option('checkpointLocation', CKPT + '/insight-raw')
@@ -124,7 +132,7 @@ if "comments" in QUERIES:
     def write_comment_sample(df, _):
         sample = df.where("published_ms IS NOT NULL AND trim(text) != ''").select(
             F.concat_ws('|', 'track_key', 'comment_id', 'comment_sort').alias('doc_id'),
-            'track_key', 'title', 'video_id', 'comment_id', 'comment_sort', 'published_ms', 'text')
+            'track_key', 'title', 'artists', 'video_id', 'comment_id', 'comment_sort', 'published_ms', 'text')
         es_write(sample, 'music-comments', 'doc_id')
 
     started.append(comments.writeStream.queryName('comment_samples').foreachBatch(write_comment_sample)
@@ -264,7 +272,7 @@ if "recommend" in QUERIES:
                      F.last("province_code").alias("province_code")))
     started.append(sessions.writeStream.outputMode("update").queryName("recommend")
                    .foreachBatch(recommend_batch)
-                   .option("checkpointLocation", CKPT + "/recommend")
+                   .option("checkpointLocation", os.getenv("RECOMMEND_CHECKPOINT_PATH") or CKPT + "/recommend")
                    .trigger(processingTime=os.getenv("RECO_TRIGGER", "5 seconds")).start())
 
 print("Started streaming queries:", [q.name for q in started], flush=True)
